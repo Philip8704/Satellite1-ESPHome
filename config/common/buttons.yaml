@@ -81,6 +81,7 @@ binary_sensor:
                 id: play_sound
                 priority: false
                 sound_file: !lambda return id(mute_switch_off_sound);
+                sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/mute_switch_off.flac"
             - switch.template.publish:
                 id: master_mute_switch
                 state: OFF
@@ -89,6 +90,7 @@ binary_sensor:
                 id: play_sound
                 priority: false
                 sound_file: !lambda return id(mute_switch_on_sound);
+                sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/mute_switch_on.flac"
             - switch.template.publish:
                 id: master_mute_switch
                 state: ON
@@ -159,10 +161,11 @@ binary_sensor:
                                                 - not:
                                                     voice_assistant.is_running
                                             then:
-                                              - script.execute:
-                                                  id: play_sound
-                                                  priority: true
-                                                  sound_file: !lambda return id(center_button_press_sound);
+                                               - script.execute:
+                                                   id: play_sound
+                                                   priority: true
+                                                   sound_file: !lambda return id(center_button_press_sound);
+                                                   sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_press.flac"
                                               - delay: 300ms
                                               - voice_assistant.start:
       # Double Click
@@ -181,6 +184,7 @@ binary_sensor:
                     id: play_sound
                     priority: false
                     sound_file: !lambda return id(center_button_double_press_sound);
+                    sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_double_press.flac"
                 - event.trigger:
                     id: action_button_press_event
                     event_type: "double_press"
@@ -202,6 +206,7 @@ binary_sensor:
                     id: play_sound
                     priority: false
                     sound_file: !lambda return id(center_button_triple_press_sound);
+                    sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_triple_press.flac"
                 - event.trigger:
                     id: action_button_press_event
                     event_type: "triple_press"
@@ -218,6 +223,7 @@ binary_sensor:
                     id: play_sound
                     priority: false
                     sound_file: !lambda return id(center_button_long_press_sound);
+                    sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_long_press.flac"
                 - light.turn_off: voice_assistant_leds
                 - event.trigger:
                     id: action_button_press_event
@@ -240,6 +246,7 @@ binary_sensor:
                     id: play_sound
                     priority: true
                     sound_file: !lambda return id(factory_reset_initiated_sound);
+                    sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/factory_reset_initiated.mp3"
                 - wait_until:
                     binary_sensor.is_off: btn_action
                 - light.turn_off: voice_assistant_leds
@@ -247,6 +254,7 @@ binary_sensor:
                     id: play_sound
                     priority: true
                     sound_file: !lambda return id(factory_reset_cancelled_sound);
+                    sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/factory_reset_cancelled.mp3"
 
       # Factory Reset
       - timing:

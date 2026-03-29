@@ -86,6 +86,7 @@ micro_wake_word:
                                       id: play_sound
                                       priority: true
                                       sound_file: !lambda return id(wake_word_triggered_sound);
+                                      sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac"
                                   - delay: 300ms
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
@@ -147,6 +148,16 @@ voice_assistant:
           # A nonempty x variable means a streaming TTS url was sent to the media player
           lambda: 'return !x.empty();'
         then:
+          - if:
+              condition:
+                lambda: |-
+                  return id(external_assist_speaker_switch).state &&
+                         id(external_assist_media_player_option) != "None";
+              then:
+                # Stop local streamed TTS as early as possible when routing externally.
+                - media_player.stop:
+                    id: external_media_player
+                    announcement: true
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
           # Start a script that would potentially enable the stop word if the response is longer than a second
@@ -159,6 +170,21 @@ voice_assistant:
         then:
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
+          - if:
+              condition:
+                lambda: |-
+                  return id(external_assist_speaker_switch).state &&
+                         id(external_assist_media_player_option) != "None";
+              then:
+                - media_player.stop:
+                    id: external_media_player
+                    announcement: true
+                - homeassistant.action:
+                    action: tts.speak
+                    data:
+                      entity_id: ${ha_tts_entity_id}
+                      media_player_entity_id: !lambda return id(external_assist_media_player_option);
+                      message: !lambda 'return x;'
           # Start a script that would potentially enable the stop word if the response is longer than a second
           - script.execute: activate_stop_word_once
   # When the voice assistant ends ...

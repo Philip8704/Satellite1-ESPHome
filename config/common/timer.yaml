@@ -58,6 +58,7 @@ script:
           id: play_sound
           priority: true
           sound_file: !lambda return id(timer_finished_sound);
+          sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac"
 
   # Script executed when the timer is ringing, to repeat the timer finished sound.
   - id: enable_repeat_one

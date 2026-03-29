@@ -15,6 +15,13 @@ audio_dac:
           volume: !lambda return id(dac_proxy).volume();
           mute: !lambda return id(dac_proxy).is_muted();
 
+globals:
+  - id: external_assist_media_player_option
+    type: std::string
+    restore_value: yes
+    max_restore_data_length: 128
+    initial_value: '"None"'
+
 api:
   actions:
     - action: activate_speaker_dac
@@ -48,6 +55,25 @@ select:
             ESP_LOGI("main", "No channel selected");
             return 0;
 
+  - platform: template
+    name: External Assist Media Player
+    id: external_assist_media_player_select
+    icon: "mdi:speaker-wireless"
+    entity_category: config
+    options:
+      - "None"
+      - ${external_assist_media_player_1}
+      - ${external_assist_media_player_2}
+      - ${external_assist_media_player_3}
+      - ${external_assist_media_player_4}
+    lambda: |-
+      if (!id(external_assist_speaker_switch).state) {
+        return {};
+      }
+      return id(external_assist_media_player_option);
+    set_action:
+      - lambda: id(external_assist_media_player_option) = x;
+
 binary_sensor:
   - platform: gpio
     id: line_out_sensor
@@ -70,12 +96,19 @@ binary_sensor:
           id: play_sound
           priority: false
           sound_file: !lambda return id(jack_connected_sound);
+          sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/jack_connected.flac"
       - delay: 800ms
       - lambda: id(jack_plugged_recently) = false;
       - script.execute: control_leds
 
     on_release:
-      - dac_proxy.activate_speaker:
+      - if:
+          condition:
+            switch.is_on: external_assist_speaker_switch
+          then:
+            - dac_proxy.activate_line_out:
+          else:
+            - dac_proxy.activate_speaker:
       - lambda: id(jack_unplugged_recently) = true;
       - script.execute: control_leds
       - delay: 200ms
@@ -83,11 +116,37 @@ binary_sensor:
           id: play_sound
           priority: false
           sound_file: !lambda return id(jack_disconnected_sound);
+          sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/jack_disconnected.flac"
       - delay: 800ms
       - lambda: id(jack_unplugged_recently) = false;
       - script.execute: control_leds
 
 switch:
+  - platform: template
+    id: external_assist_speaker_switch
+    name: External Assist Speaker
+    icon: "mdi:speaker-wireless"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - switch.template.publish:
+          id: external_assist_speaker_switch
+          state: ON
+      # Keep the internal speaker DAC muted while external mode is active.
+      - dac_proxy.activate_line_out:
+    turn_off_action:
+      - switch.template.publish:
+          id: external_assist_speaker_switch
+          state: OFF
+      - if:
+          condition:
+            binary_sensor.is_on: line_out_sensor
+          then:
+            - dac_proxy.activate_line_out:
+          else:
+            - dac_proxy.activate_speaker:
+
   # Wake Word Sound Switch.
   - platform: template
     id: snapcast_switch
@@ -246,19 +305,34 @@ script:
     parameters:
       priority: bool
       sound_file: "audio::AudioFile*"
+      sound_file_url: std::string
     then:
-      - lambda: |-
-          if (priority) {
-            id(external_media_player)
-              ->make_call()
-              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_STOP)
-              .set_announcement(true)
-              .perform();
-          }
-          if ( (id(external_media_player).state != media_player::MediaPlayerState::MEDIA_PLAYER_STATE_ANNOUNCING ) || priority) {
-            id(external_media_player)
-              ->play_file(sound_file, true, false);
-          }
+      - if:
+          condition:
+            lambda: |-
+              return id(external_assist_speaker_switch).state &&
+                     id(external_assist_media_player_option) != "None";
+          then:
+            - homeassistant.action:
+                action: media_player.play_media
+                data:
+                  entity_id: !lambda return id(external_assist_media_player_option);
+                  media_content_id: !lambda return sound_file_url;
+                  media_content_type: "music"
+                  announce: true
+          else:
+            - lambda: |-
+                if (priority) {
+                  id(external_media_player)
+                    ->make_call()
+                    .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_STOP)
+                    .set_announcement(true)
+                    .perform();
+                }
+                if ( (id(external_media_player).state != media_player::MediaPlayerState::MEDIA_PLAYER_STATE_ANNOUNCING ) || priority) {
+                  id(external_media_player)
+                    ->play_file(sound_file, true, false);
+                }
 
   # Script to increased/decreased volume
   - id: control_volume
