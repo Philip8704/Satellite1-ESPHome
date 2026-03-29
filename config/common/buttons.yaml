@@ -161,11 +161,11 @@ binary_sensor:
                                                 - not:
                                                     voice_assistant.is_running
                                             then:
-                                               - script.execute:
-                                                   id: play_sound
-                                                   priority: true
-                                                   sound_file: !lambda return id(center_button_press_sound);
-                                                   sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_press.flac"
+                                              - script.execute:
+                                                  id: play_sound
+                                                  priority: true
+                                                  sound_file: !lambda return id(center_button_press_sound);
+                                                  sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_press.flac"
                                               - delay: 300ms
                                               - voice_assistant.start:
       # Double Click
