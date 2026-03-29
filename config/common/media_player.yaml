@@ -15,13 +15,6 @@ audio_dac:
           volume: !lambda return id(dac_proxy).volume();
           mute: !lambda return id(dac_proxy).is_muted();
 
-globals:
-  - id: external_assist_media_player_option
-    type: std::string
-    restore_value: yes
-    max_restore_data_length: 128
-    initial_value: '"None"'
-
 api:
   actions:
     - action: activate_speaker_dac
@@ -66,13 +59,9 @@ select:
       - ${external_assist_media_player_2}
       - ${external_assist_media_player_3}
       - ${external_assist_media_player_4}
-    lambda: |-
-      if (!id(external_assist_speaker_switch).state) {
-        return {};
-      }
-      return id(external_assist_media_player_option);
-    set_action:
-      - lambda: id(external_assist_media_player_option) = x;
+    initial_option: "None"
+    optimistic: true
+    restore_value: true
 
 binary_sensor:
   - platform: gpio
@@ -311,12 +300,12 @@ script:
           condition:
             lambda: |-
               return id(external_assist_speaker_switch).state &&
-                     id(external_assist_media_player_option) != "None";
+                     id(external_assist_media_player_select).state != "None";
           then:
             - homeassistant.action:
                 action: media_player.play_media
                 data:
-                  entity_id: !lambda return id(external_assist_media_player_option);
+                  entity_id: !lambda return id(external_assist_media_player_select).state;
                   media_content_id: !lambda return sound_file_url;
                   media_content_type: "music"
                   announce: "true"
