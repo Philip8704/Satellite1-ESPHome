@@ -124,6 +124,9 @@ switch:
           state: ON
       # Keep the internal speaker DAC muted while external mode is active.
       - dac_proxy.activate_line_out:
+      - media_player.stop:
+          id: external_media_player
+          announcement: true
     turn_off_action:
       - switch.template.publish:
           id: external_assist_speaker_switch
@@ -298,17 +301,20 @@ script:
     then:
       - if:
           condition:
-            lambda: |-
-              return id(external_assist_speaker_switch).state &&
-                     id(external_assist_media_player_select).current_option() != "None";
+            switch.is_on: external_assist_speaker_switch
           then:
-            - homeassistant.action:
-                action: media_player.play_media
-                data:
-                  entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                  media_content_id: !lambda return sound_file_url;
-                  media_content_type: "music"
-                  announce: "true"
+            - dac_proxy.activate_line_out:
+            - if:
+                condition:
+                  lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
+                then:
+                  - homeassistant.action:
+                      action: media_player.play_media
+                      data:
+                        entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                        media_content_id: !lambda return sound_file_url;
+                        media_content_type: "music"
+                        announce: "true"
           else:
             - lambda: |-
                 if (priority) {
