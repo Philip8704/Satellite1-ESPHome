@@ -183,9 +183,8 @@ voice_assistant:
                     then:
                       - homeassistant.action:
                           action: tts.speak
-                          target:
-                            entity_id: ${ha_tts_entity_id}
                           data:
+                            entity_id: ${ha_tts_entity_id}
                             media_player_entity_id: !lambda return id(external_assist_media_player_select).current_option();
                             message: !lambda 'return x;'
           # Start a script that would potentially enable the stop word if the response is longer than a second
