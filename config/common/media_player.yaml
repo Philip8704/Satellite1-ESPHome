@@ -310,11 +310,11 @@ script:
                 then:
                   - homeassistant.action:
                       action: media_player.play_media
-                      data:
+                      target:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                      data:
                         media_content_id: !lambda return sound_file_url;
                         media_content_type: "music"
-                        announce: "true"
           else:
             - lambda: |-
                 if (priority) {
