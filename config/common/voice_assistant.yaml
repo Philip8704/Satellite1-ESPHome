@@ -174,7 +174,7 @@ voice_assistant:
                     condition:
                       lambda: |-
                         return id(external_assist_media_player_select).current_option() != "None" &&
-                               x != id(external_tts_stream_url);
+                               !id(external_tts_stream_started);
                     then:
                       - lambda: |-
                           id(external_tts_stream_started) = true;
@@ -185,7 +185,6 @@ voice_assistant:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
                             media_content_id: !lambda return x;
                             media_content_type: "music"
-                            enqueue: "add"
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
           # Start a script that would potentially enable the stop word if the response is longer than a second
