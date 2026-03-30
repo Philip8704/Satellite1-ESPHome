@@ -21,6 +21,16 @@ globals:
     type: int
     restore_value: no
     # initial_value: ${voice_assist_not_ready_phase_id}
+  # Tracks if external streaming TTS has started for the current response.
+  - id: external_tts_stream_started
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  # Tracks last seen external streaming URL to avoid repeatedly restarting playback.
+  - id: external_tts_stream_url
+    type: std::string
+    restore_value: no
+    initial_value: '""'
 
 microphone:
   - platform: satellite1
@@ -129,6 +139,9 @@ voice_assistant:
 
   # When the voice assistant starts: Play a wake up sound, duck audio.
   on_start:
+    - lambda: |-
+        id(external_tts_stream_started) = false;
+        id(external_tts_stream_url).clear();
     - mixer_speaker.apply_ducking:
         id: media_mixing_input
         decibel_reduction: 20   # Number of dB quieter; higher implies more quiet, 0 implies full volume
@@ -157,6 +170,21 @@ voice_assistant:
                 - media_player.stop:
                     id: external_media_player
                     announcement: true
+                - if:
+                    condition:
+                      lambda: |-
+                        return id(external_assist_media_player_select).current_option() != "None" &&
+                               x != id(external_tts_stream_url);
+                    then:
+                      - lambda: |-
+                          id(external_tts_stream_started) = true;
+                          id(external_tts_stream_url) = x;
+                      - homeassistant.action:
+                          action: media_player.play_media
+                          data:
+                            entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                            media_content_id: !lambda return x;
+                            media_content_type: "music"
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
           # Start a script that would potentially enable the stop word if the response is longer than a second
@@ -172,7 +200,9 @@ voice_assistant:
               announcement: true
           - if:
               condition:
-                lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
+                lambda: |-
+                  return id(external_assist_media_player_select).current_option() != "None" &&
+                         !id(external_tts_stream_started);
               then:
                 - homeassistant.action:
                     action: tts.speak
@@ -214,6 +244,9 @@ voice_assistant:
         then:
           - delay: 1s
     # Reset the voice assistant phase id and reset the LED animations.
+    - lambda: |-
+        id(external_tts_stream_started) = false;
+        id(external_tts_stream_url).clear();
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
 
