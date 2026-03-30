@@ -86,7 +86,7 @@ micro_wake_word:
                                       id: play_sound
                                       priority: true
                                       sound_file: !lambda return id(wake_word_triggered_sound);
-                                      sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac"
+                                      sound_file_url: "media-source://media_source/local/wake_word_triggered.flac"
                                   - delay: 300ms
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
