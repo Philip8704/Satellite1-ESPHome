@@ -85,7 +85,7 @@ binary_sensor:
           id: play_sound
           priority: false
           sound_file: !lambda return id(jack_connected_sound);
-          sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/jack_connected.flac"
+          sound_file_url: "${external_sound_base}/jack_connected.flac"
       - delay: 800ms
       - lambda: id(jack_plugged_recently) = false;
       - script.execute: control_leds
@@ -105,7 +105,7 @@ binary_sensor:
           id: play_sound
           priority: false
           sound_file: !lambda return id(jack_disconnected_sound);
-          sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/jack_disconnected.flac"
+          sound_file_url: "${external_sound_base}/jack_disconnected.flac"
       - delay: 800ms
       - lambda: id(jack_unplugged_recently) = false;
       - script.execute: control_leds

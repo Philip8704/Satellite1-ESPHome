@@ -3,9 +3,18 @@ substitutions:
   ha_tts_entity_id: tts.edge_tts
   # External media_player options shown in the ESPHome UI select.
   external_assist_media_player_1: media_player.philip
-  external_assist_media_player_2: None
+  external_assist_media_player_2: media_player.bedroom_2
   external_assist_media_player_3: None
   external_assist_media_player_4: None
+  # LAN base URL HA serves chimes from. Drop the FLAC/MP3 files into
+  # <HA config>/www/sounds/ and they become reachable at this base. Used only
+  # when routing to an external HA media player; the internal speaker plays
+  # the FLACs that are embedded into the firmware at compile time.
+  # Override this in your top-level YAML if homeassistant.local is unreliable
+  # on your LAN, e.g.:
+  #   substitutions:
+  #     external_sound_base: http://192.168.1.10:8123/local/sounds
+  external_sound_base: http://homeassistant.local:8123/local/sounds
 
 api:
   id: api_id
