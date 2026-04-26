@@ -308,12 +308,18 @@ script:
                 condition:
                   lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
                 then:
+                  # Use announce:true so short UI sounds (wake chime, jack
+                  # plug/unplug, button feedback) duck over any currently
+                  # playing media on the external player instead of replacing
+                  # it. On players that don't support MEDIA_ANNOUNCE, HA falls
+                  # back to normal play_media automatically.
                   - homeassistant.action:
                       action: media_player.play_media
                       data:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
                         media_content_id: !lambda return sound_file_url;
                         media_content_type: "music"
+                        announce: "true"
           else:
             - lambda: |-
                 if (priority) {

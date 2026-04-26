@@ -22,6 +22,18 @@ globals:
     restore_value: no
     # initial_value: ${voice_assist_not_ready_phase_id}
 
+  # --------------------------------------------------------------------------
+  # Low-latency external TTS routing
+  # --------------------------------------------------------------------------
+  # Tracks whether the *already generated* streaming/TTS URL from HA has been
+  # forwarded to the external HA media player for the current Voice Assistant
+  # run. When true we skip any fallback (tts.speak / on_tts_end) so that we
+  # never trigger a second TTS generation on the HA side and never double-play.
+  - id: external_tts_forwarded
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
 microphone:
   - platform: satellite1
     id: sat1_mics
@@ -87,7 +99,15 @@ micro_wake_word:
                                       priority: true
                                       sound_file: !lambda return id(wake_word_triggered_sound);
                                       sound_file_url: "https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac"
-                                  - delay: 300ms
+                                  # Only wait for the chime to finish on device playback.
+                                  # In external mode the chime is fired over the network
+                                  # to HA; blocking here just delays the mic opening
+                                  # without synchronising with external playback, so skip it.
+                                  - if:
+                                      condition:
+                                        switch.is_off: external_assist_speaker_switch
+                                      then:
+                                        - delay: 300ms
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
 
@@ -121,6 +141,8 @@ voice_assistant:
         then:
           - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
           - script.execute: control_leds
+    # Reset the low-latency forwarding flag so the next run is clean.
+    - lambda: id(external_tts_forwarded) = false;
     # Stop ducking audio.
     - mixer_speaker.apply_ducking:
         id: media_mixing_input
@@ -129,6 +151,9 @@ voice_assistant:
 
   # When the voice assistant starts: Play a wake up sound, duck audio.
   on_start:
+    # Reset the low-latency forwarding flag so the next pipeline run can forward
+    # the streaming TTS URL to the external media player.
+    - lambda: id(external_tts_forwarded) = false;
     - mixer_speaker.apply_ducking:
         id: media_mixing_input
         decibel_reduction: 20   # Number of dB quieter; higher implies more quiet, 0 implies full volume
@@ -145,26 +170,89 @@ voice_assistant:
   on_intent_progress:
     - if:
         condition:
-          # A nonempty x variable means a streaming TTS url was sent to the media player
+          # A nonempty x variable means a streaming TTS url was sent to the local media player
+          # (same URL HA would stream to the local speaker). We forward it to the external
+          # HA media player for lowest-latency playback: no re-generation, playback starts
+          # as soon as HA streams the first TTS chunk.
           lambda: 'return !x.empty();'
         then:
           - if:
               condition:
                 switch.is_on: external_assist_speaker_switch
               then:
-                # Stop local streamed TTS as early as possible when routing externally.
+                # Mute the internal speaker so the local media_player (already told to play
+                # this URL by the voice_assistant core) produces no audible output.
                 - dac_proxy.activate_line_out:
+                # Cancel the local streaming playback as early as possible.
                 - media_player.stop:
                     id: external_media_player
                     announcement: true
+                # Forward the streaming URL to the configured external HA media player.
+                # This bypasses tts.speak entirely and therefore avoids a second TTS
+                # generation on the HA side - the URL is the same streaming URL HA
+                # uses for the local speaker, so playback starts the moment HA's TTS
+                # provider emits the first audio chunk.
+                - if:
+                    condition:
+                      lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
+                    then:
+                      - homeassistant.action:
+                          action: media_player.play_media
+                          data:
+                            entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                            media_content_id: !lambda 'return x;'
+                            media_content_type: "music"
+                            announce: "true"
+                      - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
           # Start a script that would potentially enable the stop word if the response is longer than a second
           - script.execute: activate_stop_word_once
   on_tts_start:
+    # NOTE: We intentionally do NOT call `tts.speak` here any more when routing to
+    # an external HA media player. Doing so would force HA to *regenerate* the
+    # entire TTS response (a second time) after waiting for the full text to be
+    # produced by the LLM - that was the dominant latency source in the previous
+    # design. Instead, the streaming TTS URL is forwarded in `on_intent_progress`
+    # above (streaming providers) or in `on_tts_end` below (non-streaming
+    # providers). For external mode we still activate line-out and silence local
+    # playback to keep the internal speaker quiet.
     - if:
         condition:
           switch.is_on: external_assist_speaker_switch
+        then:
+          - dac_proxy.activate_line_out:
+          - if:
+              condition:
+                # Only cancel the local speaker if nothing has been forwarded yet -
+                # otherwise we already stopped it in on_intent_progress.
+                lambda: 'return !id(external_tts_forwarded);'
+              then:
+                - media_player.stop:
+                    id: external_media_player
+                    announcement: true
+    - if:
+        condition:
+          # The intent_progress trigger didn't start the TTS Reponse
+          lambda: 'return id(voice_assistant_phase) != ${voice_assist_replying_phase_id};'
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+          - script.execute: control_leds
+    # Start a script that would potentially enable the stop word if the response is longer than a second
+    - script.execute: activate_stop_word_once
+
+  # Fires when a non-streaming TTS provider has finished generating the audio
+  # and publishes the final URL. This is the fallback path for providers that
+  # don't emit `tts_start_streaming` (i.e. no on_intent_progress URL). We
+  # forward that URL to the external HA media player so we still skip the
+  # second-generation cost of `tts.speak`.
+  on_tts_end:
+    - if:
+        condition:
+          and:
+            - switch.is_on: external_assist_speaker_switch
+            - lambda: 'return !id(external_tts_forwarded);'
+            - lambda: 'return !x.empty();'
         then:
           - dac_proxy.activate_line_out:
           - media_player.stop:
@@ -175,20 +263,13 @@ voice_assistant:
                 lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
               then:
                 - homeassistant.action:
-                    action: tts.speak
+                    action: media_player.play_media
                     data:
-                      entity_id: ${ha_tts_entity_id}
-                      media_player_entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                      message: !lambda 'return x;'
-    - if:
-        condition:
-          # The intent_progress trigger didn't start the TTS Reponse
-          lambda: 'return id(voice_assistant_phase) != ${voice_assist_replying_phase_id};'
-        then:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
-          - script.execute: control_leds
-    # Start a script that would potentially enable the stop word if the response is longer than a second
-    - script.execute: activate_stop_word_once
+                      entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                      media_content_id: !lambda 'return x;'
+                      media_content_type: "music"
+                      announce: "true"
+                - lambda: id(external_tts_forwarded) = true;
   # When the voice assistant ends ...
   on_end:
     - wait_until:
