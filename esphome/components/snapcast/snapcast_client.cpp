@@ -36,6 +36,8 @@ static const char *const TAG = "snapcast_client";
 constexpr uint32_t STREAM_INIT_INTERVAL_MS = 500;
 constexpr uint32_t MAX_STREAM_INIT_RETRIES = 5;
 constexpr uint32_t CONNECTING_INTERVAL_MS = 2000;  // short drops are handled internally inside the stream task
+constexpr uint32_t RECONNECT_COOLDOWN_ON_ERROR_MS = 10000;
+constexpr uint32_t DISCONNECT_AFTER_STOP_DELAY_MS = 500;
 
 void SnapcastClient::setup() { this->network_initialized_ = false; }
 
@@ -45,6 +47,8 @@ void SnapcastClient::loop() {
       this->disable_requested_ = false;
       this->play_requested_ = false;
       this->stop_playing_requested_ = false;
+      this->pending_disconnect_after_stop_ = false;
+      this->disconnect_after_stop_at_ms_ = 0;
       this->state_ = SnapcastClientState::UNINITIALIZED;
       if (!this->enabled_) {
         this->disable_loop();
@@ -83,6 +87,12 @@ void SnapcastClient::loop() {
 
     case SnapcastClientState::DISCONNECTED:
       if (this->server_ && millis() > this->next_connecting_at_) {
+        if (this->reconnect_cooldown_until_ms_ > millis()) {
+          uint32_t remaining_ms = this->reconnect_cooldown_until_ms_ - millis();
+          ESP_LOGW(TAG, "Reconnect cooldown active for %us", remaining_ms / 1000);
+          this->next_connecting_at_ = millis() + CONNECTING_INTERVAL_MS;
+          return;
+        }
         auto &s = *this->server_;
         this->next_connecting_at_ = millis() + CONNECTING_INTERVAL_MS;
         ESP_LOGI(TAG, "Trying to connect to %s : %d", s.server_ip.c_str(), s.stream_port);
@@ -111,7 +121,17 @@ void SnapcastClient::loop() {
       if (this->stream_.server_is_lost()) {
         auto &s = *this->server_;
         ESP_LOGW(TAG, "Connection to %s lost", s.server_ip.c_str());
+        this->pending_disconnect_after_stop_ = false;
+        this->disconnect_after_stop_at_ms_ = 0;
         this->server_.reset();
+        this->next_connecting_at_ = millis() + CONNECTING_INTERVAL_MS;
+        this->state_ = SnapcastClientState::DISCONNECTED;
+      } else if (this->pending_disconnect_after_stop_ && millis() >= this->disconnect_after_stop_at_ms_) {
+        ESP_LOGI(TAG, "Disconnecting snapcast stream after control command delay");
+        this->pending_disconnect_after_stop_ = false;
+        this->disconnect_after_stop_at_ms_ = 0;
+        this->stream_.disconnect();
+        this->cntrl_session_.disconnect();
         this->next_connecting_at_ = millis() + CONNECTING_INTERVAL_MS;
         this->state_ = SnapcastClientState::DISCONNECTED;
       } else if (this->play_requested_ && !this->stream_.is_streaming()) {
@@ -166,7 +186,11 @@ error_t SnapcastClient::connect_to_server(std::string url, uint32_t stream_port,
   return ESP_OK;
 }
 
-void SnapcastClient::stop_streaming() { this->cntrl_session_.request_stop(); }
+void SnapcastClient::stop_streaming() {
+  this->cntrl_session_.request_stop();
+  this->pending_disconnect_after_stop_ = true;
+  this->disconnect_after_stop_at_ms_ = millis() + DISCONNECT_AFTER_STOP_DELAY_MS;
+}
 
 void SnapcastClient::report_volume(float volume, bool muted) {
   if (this->stream_.is_connected()) {
@@ -190,6 +214,8 @@ void SnapcastClient::on_stream_state_update(StreamState stream_state, uint8_t vo
 
   if (stream_state == StreamState::ERROR) {
     ESP_LOGE(TAG, "stream: %s", this->stream_.error_msg_.c_str());
+    this->reconnect_cooldown_until_ms_ = millis() + RECONNECT_COOLDOWN_ON_ERROR_MS;
+    ESP_LOGW(TAG, "Entering reconnect cooldown for %us after stream error", RECONNECT_COOLDOWN_ON_ERROR_MS / 1000);
   }
 }
 
@@ -199,6 +225,7 @@ void SnapcastClient::on_stream_update_msg(StreamStatus status, std::string strea
     if (status == StreamStatus::PLAYING) {
       ESP_LOGI(TAG, "Playing stream: %s\n", stream_id.c_str());
       this->curr_server_url_.stream_name = stream_id;
+      this->reconnect_cooldown_until_ms_ = 0;
       this->play_requested_ = true;
     } else if (status == StreamStatus::IDLE) {
       this->play_requested_ = false;

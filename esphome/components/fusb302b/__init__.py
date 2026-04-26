@@ -77,6 +77,7 @@ PD_ACTION_SCHEMA = automation.maybe_simple_id({cv.GenerateID(): cv.use_id(PowerD
         },
         key=CONF_REQUEST_VOLTAGE,
     ),
+    synchronous=True,
 )
 async def power_delivery_request_voltage_action(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)

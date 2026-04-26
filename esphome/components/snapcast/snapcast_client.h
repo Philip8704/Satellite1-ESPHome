@@ -96,6 +96,9 @@ class SnapcastClient : public Component {
   uint32_t stream_init_counter_{0};
   uint32_t next_connecting_at_{0};
   uint32_t connection_timeout_at_{0};
+  uint32_t reconnect_cooldown_until_ms_{0};
+  bool pending_disconnect_after_stop_{false};
+  uint32_t disconnect_after_stop_at_ms_{0};
 
   void on_network_ready_();
   SnapcastClientState state_{SnapcastClientState::UNINITIALIZED};

@@ -566,8 +566,8 @@ void AudioPipeline::decode_task(void *params) {
 
         if (!started_playback && has_stream_info) {
           // Verify enough data is available before starting playback
-          size_t curr_bytes = this_pipeline->reader_output_rb_->bytes_available();
-          if (curr_bytes >= initial_bytes_to_buffer) {
+          if (this_pipeline->reader_output_rb_ != nullptr &&
+              this_pipeline->reader_output_rb_->bytes_available() >= initial_bytes_to_buffer) {
             started_playback = true;
           }
         }

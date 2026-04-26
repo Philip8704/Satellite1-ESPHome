@@ -151,6 +151,10 @@ class SnapcastStream {
   void start_streaming_();
   void stop_streaming_();
   void set_state_(StreamState new_state);
+  void request_wifi_high_performance_();
+  void release_wifi_high_performance_();
+  void schedule_wifi_ps_verification_(const char *reason, bool expect_none);
+  void poll_wifi_ps_verification_();
 
   void send_message_(SnapcastMessage *msg);
   void send_hello_();
@@ -158,10 +162,44 @@ class SnapcastStream {
   void send_time_sync_();
 
   esp_err_t read_and_process_messages_(ChunkedRingBuffer *read_ring_buffer, uint32_t timeout_ms);
+  void maybe_log_debug_stats_();
+  void reset_sync_wait_watchdog_();
 
   bool codec_header_sent_{false};
   uint8_t *codec_header_{nullptr};
   size_t codec_header_size_{0};
+
+  bool wifi_high_perf_requested_{false};
+#if SNAPCAST_DEBUG
+  bool wifi_ps_verify_pending_{false};
+  bool wifi_ps_expect_none_{false};
+  uint32_t wifi_ps_verify_deadline_ms_{0};
+  const char *wifi_ps_verify_reason_{nullptr};
+#endif
+
+  uint32_t wire_chunks_seen_{0};
+  uint32_t chunks_pushed_{0};
+  uint32_t drop_not_ready_{0};
+  uint32_t drop_past_{0};
+
+#if SNAPCAST_DEBUG
+  uint32_t debug_last_stats_log_ms_{0};
+  uint32_t debug_last_wire_chunks_seen_{0};
+  uint32_t debug_last_chunks_pushed_{0};
+  uint32_t debug_last_drop_not_ready_{0};
+  uint32_t debug_last_drop_past_{0};
+#endif
+
+  uint32_t sync_wait_started_ms_{0};
+  uint32_t sync_wait_wire_start_{0};
+  bool sync_wait_active_{false};
+
+  uint32_t sync_bootstrap_started_ms_{0};
+  bool sync_ready_logged_{false};
+
+  bool resume_alignment_pending_{false};
+  uint32_t resume_alignment_started_ms_{0};
+  uint32_t resume_alignment_dropped_{0};
 };
 
 }  // namespace snapcast

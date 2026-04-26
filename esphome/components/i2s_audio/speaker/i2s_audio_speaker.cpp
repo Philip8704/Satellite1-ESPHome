@@ -411,8 +411,13 @@ void I2SAudioSpeaker::speaker_task(void *params) {
         }
       }
 
-      int64_t write_timestamp;
+      int64_t write_timestamp = this_speaker->last_dma_write_;
+      bool received_timestamp = false;
       while (xQueueReceive(this_speaker->i2s_sent_time_queue_, &write_timestamp, 0)) {
+        received_timestamp = true;
+      }
+      if (!received_timestamp) {
+        write_timestamp = esp_timer_get_time();
       }
 
       if (xSemaphoreTake(this_speaker->lock_, pdMS_TO_TICKS(10))) {
@@ -610,6 +615,13 @@ esp_err_t I2SAudioSpeaker::start_i2s_driver_(audio::AudioStreamInfo &audio_strea
 void I2SAudioSpeaker::delete_task_(size_t buffer_size) {
   this->audio_ring_buffer_.reset();  // Releases ownership of the shared_ptr
   this->bytes_in_ringbuffer_ = 0;
+  this->in_write_buffer_ = 0;
+  this->padded_zero_frames_ = 0;
+  this->last_dma_write_ = 0;
+
+  if (this->i2s_sent_time_queue_ != nullptr) {
+    xQueueReset(this->i2s_sent_time_queue_);
+  }
 
   if (this->data_buffer_ != nullptr) {
     ExternalRAMAllocator<uint8_t> allocator;

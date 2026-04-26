@@ -19,6 +19,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -45,7 +46,7 @@ class TimeStats {
   struct Config {
     // General
     float base_smoothing = 0.02f;   // Classic EMA base alpha (also used for bias EMA)
-    size_t min_valid_samples = 50;  // init: number of samples before locking initial estimate
+    size_t min_valid_samples = 16;  // init: number of samples before locking initial estimate
     size_t window_size = 5;         // min-RTT selection window
 
     // RTT stats adaptation
@@ -86,10 +87,16 @@ class TimeStats {
         window_size_(cfg.window_size) {}
 
   void set_request_time(uint16_t msg_id, tv_t request_time) {
+#if SNAPCAST_DEBUG
+    this->debug_sync_requests_sent_.fetch_add(1, std::memory_order_relaxed);
+#endif
     const int64_t us = request_time.to_microseconds();
 
     xSemaphoreTake(req_mu_, portMAX_DELAY);
     if (pending_req_send_us_.size() >= MAX_PENDING_REQ) {
+#if SNAPCAST_DEBUG
+      this->debug_sync_pending_overflow_drops_.fetch_add(1, std::memory_order_relaxed);
+#endif
       // Drop the oldest entry (simple O(n) fallback; MAX_PENDING_REQ is tiny)
       auto oldest = pending_req_send_us_.begin();
       for (auto it = pending_req_send_us_.begin(); it != pending_req_send_us_.end(); ++it) {
@@ -123,16 +130,28 @@ class TimeStats {
     int64_t send_us = 0;
     if (!try_get_request_send_time_us(msg_id, &send_us)) {
       // No matching request -> ignore
+#if SNAPCAST_DEBUG
+      this->debug_sync_unmatched_responses_.fetch_add(1, std::memory_order_relaxed);
+#endif
       return;
     }
+#if SNAPCAST_DEBUG
+    this->debug_sync_matched_responses_.fetch_add(1, std::memory_order_relaxed);
+#endif
 
     const int64_t recv_us = received_time.to_microseconds();
     const int64_t rtt_us = recv_us - send_us;
 
     // Sanity clamp
     if (rtt_us <= 0 || rtt_us > 5'000'000) {  // >5s
+#if SNAPCAST_DEBUG
+      this->debug_sync_invalid_rtt_samples_.fetch_add(1, std::memory_order_relaxed);
+#endif
       return;
     }
+#if SNAPCAST_DEBUG
+    this->debug_sync_valid_samples_.fetch_add(1, std::memory_order_relaxed);
+#endif
     const tv_t rtt = tv_t::from_microseconds(rtt_us);
 
     if (!has_reference_) {
@@ -208,12 +227,65 @@ class TimeStats {
     reset_kalman_state_();
 
     smoothing_ = base_smoothing_ = cfg_.base_smoothing;
+
+#if SNAPCAST_DEBUG
+    this->debug_sync_requests_sent_.store(0, std::memory_order_relaxed);
+    this->debug_sync_matched_responses_.store(0, std::memory_order_relaxed);
+    this->debug_sync_unmatched_responses_.store(0, std::memory_order_relaxed);
+    this->debug_sync_valid_samples_.store(0, std::memory_order_relaxed);
+    this->debug_sync_invalid_rtt_samples_.store(0, std::memory_order_relaxed);
+    this->debug_sync_pending_overflow_drops_.store(0, std::memory_order_relaxed);
+#endif
+
     xSemaphoreTake(req_mu_, portMAX_DELAY);
     pending_req_send_us_.clear();
     xSemaphoreGive(req_mu_);
   }
 
   size_t outliers() const { return outlier_count_; }
+
+  uint32_t debug_sync_requests_sent() const {
+#if SNAPCAST_DEBUG
+    return this->debug_sync_requests_sent_.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+  }
+  uint32_t debug_sync_matched_responses() const {
+#if SNAPCAST_DEBUG
+    return this->debug_sync_matched_responses_.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+  }
+  uint32_t debug_sync_unmatched_responses() const {
+#if SNAPCAST_DEBUG
+    return this->debug_sync_unmatched_responses_.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+  }
+  uint32_t debug_sync_valid_samples() const {
+#if SNAPCAST_DEBUG
+    return this->debug_sync_valid_samples_.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+  }
+  uint32_t debug_sync_invalid_rtt_samples() const {
+#if SNAPCAST_DEBUG
+    return this->debug_sync_invalid_rtt_samples_.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+  }
+  uint32_t debug_sync_pending_overflow_drops() const {
+#if SNAPCAST_DEBUG
+    return this->debug_sync_pending_overflow_drops_.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+  }
 
  public:
   // ---------------- Configuration ----------------
@@ -248,6 +320,15 @@ class TimeStats {
   int64_t last_rtt_us_ = 0;
   double excess_ema_ = 0.0;  // EMA of excess RTT = RTT - minRTT
   double absdev_ema_ = 0.0;  // EMA of |excess - excess_ema|
+
+#if SNAPCAST_DEBUG
+  std::atomic<uint32_t> debug_sync_requests_sent_{0};
+  std::atomic<uint32_t> debug_sync_matched_responses_{0};
+  std::atomic<uint32_t> debug_sync_unmatched_responses_{0};
+  std::atomic<uint32_t> debug_sync_valid_samples_{0};
+  std::atomic<uint32_t> debug_sync_invalid_rtt_samples_{0};
+  std::atomic<uint32_t> debug_sync_pending_overflow_drops_{0};
+#endif
 
   void rtt_stats_reset_() {
     rtt_inited_ = false;

@@ -144,6 +144,11 @@ size_t SourceSpeaker::play_silence(size_t length_ms) {
 void SourceSpeaker::start() { this->state_ = speaker::STATE_STARTING; }
 
 esp_err_t SourceSpeaker::start_() {
+  if (xSemaphoreTake(this->parent_->lock_, pdMS_TO_TICKS(10))) {
+    this->bytes_in_ringbuffer_ = 0;
+    xSemaphoreGive(this->parent_->lock_);
+  }
+
   const size_t ring_buffer_size = this->audio_stream_info_.ms_to_bytes(this->buffer_duration_ms_);
   if (this->transfer_buffer_.use_count() == 0) {
     this->transfer_buffer_ =
@@ -176,6 +181,10 @@ void SourceSpeaker::stop() {
 }
 
 void SourceSpeaker::stop_() {
+  if (xSemaphoreTake(this->parent_->lock_, pdMS_TO_TICKS(10))) {
+    this->bytes_in_ringbuffer_ = 0;
+    xSemaphoreGive(this->parent_->lock_);
+  }
   this->transfer_buffer_.reset();  // deallocates the transfer buffer
 }
 
@@ -512,6 +521,11 @@ void MixerSpeaker::mix_audio_samples(const int16_t *primary_buffer, audio::Audio
 void MixerSpeaker::audio_mixer_task(void *params) {
   MixerSpeaker *this_mixer = (MixerSpeaker *) params;
 
+  if (xSemaphoreTake(this_mixer->lock_, pdMS_TO_TICKS(10))) {
+    this_mixer->audio_in_process_us_ = 0;
+    xSemaphoreGive(this_mixer->lock_);
+  }
+
   xEventGroupSetBits(this_mixer->event_group_, MixerEventGroupBits::STATE_STARTING);
 
   this_mixer->task_created_ = true;
@@ -671,6 +685,11 @@ void MixerSpeaker::audio_mixer_task(void *params) {
   }
 
   xEventGroupSetBits(this_mixer->event_group_, MixerEventGroupBits::STATE_STOPPING);
+
+  if (xSemaphoreTake(this_mixer->lock_, pdMS_TO_TICKS(10))) {
+    this_mixer->audio_in_process_us_ = 0;
+    xSemaphoreGive(this_mixer->lock_);
+  }
 
   output_transfer_buffer.reset();
 

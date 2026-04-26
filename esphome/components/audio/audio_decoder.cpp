@@ -65,6 +65,11 @@ esp_err_t AudioDecoder::start(AudioFileType audio_file_type) {
 #ifdef USE_AUDIO_FLAC_SUPPORT
     case AudioFileType::FLAC:
       this->flac_decoder_ = make_unique<esp_audio_libs::flac::FLACDecoder>();
+      // xCRC check slows down decoding by 15-20% on an ESP32-S3. FLAC sources in ESPHome are either from an http source
+      //  or built into the firmware, so the data integrity is already verified by the time it gets to the decoder,
+      //  making the CRC check unnecessary.
+      this->flac_decoder_->set_crc_check_enabled(false);
+
       this->free_buffer_required_ =
           this->output_transfer_buffer_->capacity();  // Adjusted and reallocated after reading the header
       break;
@@ -282,9 +287,9 @@ FileDecoderState AudioDecoder::decode_flac_() {
   static uint32_t counter = 0;
 #endif
 
-  auto result = this->flac_decoder_->decode_frame(
-      this->input_transfer_buffer_->get_buffer_start(), this->input_transfer_buffer_->available(),
-      reinterpret_cast<int16_t *>(this->output_transfer_buffer_->get_buffer_end()), &output_samples);
+  auto result = this->flac_decoder_->decode_frame(this->input_transfer_buffer_->get_buffer_start(),
+                                                  this->input_transfer_buffer_->available(),
+                                                  this->output_transfer_buffer_->get_buffer_end(), &output_samples);
 
 #if SNAPCAST_DEBUG
   time_acc += micros() - start_time_stamp;
@@ -337,7 +342,7 @@ FileDecoderState AudioDecoder::decode_mp3_() {
 
   // Advance read pointer to match the offset for the syncword
   this->input_transfer_buffer_->decrease_buffer_length(offset);
-  uint8_t *buffer_start = this->input_transfer_buffer_->get_buffer_start();
+  const uint8_t *buffer_start = this->input_transfer_buffer_->get_buffer_start();
 
   buffer_length = (int) this->input_transfer_buffer_->available();
   int err = esp_audio_libs::helix_decoder::MP3Decode(this->mp3_decoder_, &buffer_start, &buffer_length,

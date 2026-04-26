@@ -472,10 +472,10 @@ void SnapcastControlSession::group_request_stop(const ClientState &state) {
         "Stream.Control",
         [sId = std::move(stream_id)](JsonObject params) {
           params["id"] = sId;
-          params["command"] = "stop";
+          params["command"] = "pause";
           JsonArray cmd_params = params["clients"].to<JsonArray>();
         },
-        {}, 2000);
+        [this](JsonObject root) { this->request_server_info_({}); }, 2000);
     return;
   }
   // stream doesn't support direct control, set to default stream instead.

@@ -21,6 +21,12 @@
 
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
+#if defined(USE_WIFI_RUNTIME_POWER_SAVE) && defined(USE_WIFI)
+#include "esphome/components/wifi/wifi_component.h"
+#if SNAPCAST_DEBUG && defined(USE_ESP32)
+#include <esp_wifi.h>
+#endif
+#endif
 
 extern "C" {
 #include <sys/select.h>
@@ -37,6 +43,10 @@ namespace esphome {
 namespace snapcast {
 
 static const char *const TAG = "snapcast_stream";
+constexpr uint32_t SYNC_READY_TIMEOUT_MS = 12000;
+constexpr uint32_t MIN_WIRE_BEFORE_SYNC_TIMEOUT = 20;
+constexpr int64_t RESUME_MIN_LEAD_US = 35000;
+constexpr uint32_t RESUME_ALIGN_MAX_WAIT_MS = 400;
 
 static const int32_t TX_BUFFER_SIZE = 1024;
 static const int32_t RX_BUFFER_SIZE = 4096;
@@ -45,6 +55,25 @@ static const uint8_t STREAM_TASK_PRIORITY = 14;
 static const uint32_t CONNECTION_TIMEOUT_MS = 2000;
 static const size_t TASK_STACK_SIZE = 4 * 1024;
 static const uint32_t TIME_SYNC_INTERVAL_MS = 2000;
+static const uint32_t TIME_SYNC_BOOTSTRAP_INTERVAL_MS = 250;
+#if SNAPCAST_DEBUG
+static const uint32_t WIFI_PS_VERIFY_TIMEOUT_MS = 2000;
+#endif
+
+#if SNAPCAST_DEBUG && defined(USE_ESP32) && defined(USE_WIFI_RUNTIME_POWER_SAVE) && defined(USE_WIFI)
+const char *wifi_ps_mode_to_str_(wifi_ps_type_t mode) {
+  switch (mode) {
+    case WIFI_PS_NONE:
+      return "NONE";
+    case WIFI_PS_MIN_MODEM:
+      return "MIN_MODEM";
+    case WIFI_PS_MAX_MODEM:
+      return "MAX_MODEM";
+    default:
+      return "UNKNOWN";
+  }
+}
+#endif
 
 enum StreamTaskBits : uint32_t {
   // Command sent by the main controller logic to the transport task.
@@ -624,6 +653,8 @@ esp_err_t SnapcastStream::read_and_process_messages_(ChunkedRingBuffer *read_rin
         return ESP_OK;
       } break;
       case message_type::kWireChunk: {
+        this->wire_chunks_seen_++;
+        const bool sync_ready = this->time_stats_.is_ready();
         if (this->state_ == StreamState::STREAMING && this->codec_header_ && !this->codec_header_sent_) {
           timed_chunk_t *timed_chunk = nullptr;
           timed_ring_buffer->acquire_write_chunk(&timed_chunk, sizeof(timed_chunk_t) + this->codec_header_size_,
@@ -643,7 +674,39 @@ esp_err_t SnapcastStream::read_and_process_messages_(ChunkedRingBuffer *read_rin
           timed_ring_buffer->release_write_chunk(timed_chunk, this->codec_header_size_);
           this->codec_header_sent_ = true;
         }
-        if (this->state_ != StreamState::STREAMING || !this->codec_header_sent_ || !this->time_stats_.is_ready()) {
+        if (this->state_ == StreamState::STREAMING && this->codec_header_sent_) {
+          if (sync_ready) {
+            this->reset_sync_wait_watchdog_();
+          } else {
+            this->drop_not_ready_++;
+            const uint32_t wire_seen = this->wire_chunks_seen_;
+            if (!this->sync_wait_active_) {
+              this->sync_wait_active_ = true;
+              this->sync_wait_started_ms_ = millis();
+              this->sync_wait_wire_start_ = wire_seen;
+            }
+
+            if ((wire_seen - this->sync_wait_wire_start_) >= MIN_WIRE_BEFORE_SYNC_TIMEOUT &&
+                (millis() - this->sync_wait_started_ms_) >= SYNC_READY_TIMEOUT_MS) {
+              this->error_msg_ = "Snapcast time sync not ready within " + to_string(SYNC_READY_TIMEOUT_MS) + "ms";
+              ESP_LOGE(TAG,
+                       "time sync timeout: wire=%lu pushed=%lu drop_not_ready=%lu drop_past=%lu state=%d ts_ready=%d",
+                       static_cast<unsigned long>(wire_seen), static_cast<unsigned long>(this->chunks_pushed_),
+                       static_cast<unsigned long>(this->drop_not_ready_), static_cast<unsigned long>(this->drop_past_),
+                       static_cast<int>(this->state_), this->time_stats_.is_ready());
+              this->reset_sync_wait_watchdog_();
+              this->sync_bootstrap_started_ms_ = 0;
+              this->sync_ready_logged_ = false;
+              this->set_state_(StreamState::ERROR);
+              read_ring_buffer->release_read_chunk(chunk);
+              return ESP_FAIL;
+            }
+          }
+        }
+        if (this->state_ != StreamState::STREAMING || !this->codec_header_sent_ || !sync_ready) {
+          if (this->state_ == StreamState::STREAMING && this->codec_header_sent_ && !sync_ready) {
+            this->drop_not_ready_++;
+          }
           read_ring_buffer->release_read_chunk(chunk);
           vTaskDelay(pdMS_TO_TICKS(5));
           continue;
@@ -654,13 +717,26 @@ esp_err_t SnapcastStream::read_and_process_messages_(ChunkedRingBuffer *read_rin
           read_ring_buffer->release_read_chunk(chunk);
           return ESP_FAIL;
         }
-        if (!this->time_stats_.is_ready()) {
-          read_ring_buffer->release_read_chunk(chunk);
-          vTaskDelay(pdMS_TO_TICKS(5));
-          return ESP_OK;  // wait for time stats to be ready, return for allowing to send sync requests
+        tv_t time_stamp = this->to_local_time_(tv_t(wire_chunk_msg.timestamp_sec, wire_chunk_msg.timestamp_usec));
+        const tv_t now = tv_t::now();
+        const int64_t lead_us = (time_stamp - now).to_microseconds();
+
+        if (this->resume_alignment_pending_) {
+          const uint32_t align_elapsed_ms = millis() - this->resume_alignment_started_ms_;
+          if (lead_us < RESUME_MIN_LEAD_US && align_elapsed_ms < RESUME_ALIGN_MAX_WAIT_MS) {
+            this->resume_alignment_dropped_++;
+            read_ring_buffer->release_read_chunk(chunk);
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+          }
+#if SNAPCAST_DEBUG
+          ESP_LOGI(TAG, "resume align: accepted first chunk lead=%lld us after %lu ms (dropped=%lu, sync_ready=%d)",
+                   static_cast<long long>(lead_us), static_cast<unsigned long>(align_elapsed_ms),
+                   static_cast<unsigned long>(this->resume_alignment_dropped_), this->time_stats_.is_ready());
+#endif
+          this->resume_alignment_pending_ = false;
         }
 
-        tv_t time_stamp = this->to_local_time_(tv_t(wire_chunk_msg.timestamp_sec, wire_chunk_msg.timestamp_usec));
 #if SNAPCAST_DEBUG
         static tv_t last_time_stamp = time_stamp;
         if ((time_stamp - last_time_stamp).to_millis() > 24) {
@@ -669,10 +745,11 @@ esp_err_t SnapcastStream::read_and_process_messages_(ChunkedRingBuffer *read_rin
         }
         last_time_stamp = time_stamp;
 #endif
-        if (time_stamp < tv_t::now()) {
+        if (time_stamp < now) {
+          this->drop_past_++;
           // chunk is in the past, ignore it
 #if SNAPCAST_DEBUG
-          printf("chunk-read: skipping full frame: delta: %lld\n", time_stamp.to_millis() - tv_t::now().to_millis());
+          printf("chunk-read: skipping full frame: delta: %lld\n", time_stamp.to_millis() - now.to_millis());
           printf("server-time: sec:%d, usec:%d\n", wire_chunk_msg.timestamp_sec, wire_chunk_msg.timestamp_usec);
           printf("local-time: sec:%d, usec:%d\n", time_stamp.sec, time_stamp.usec);
 #endif
@@ -697,6 +774,7 @@ esp_err_t SnapcastStream::read_and_process_messages_(ChunkedRingBuffer *read_rin
           return ESP_FAIL;
         }
         timed_ring_buffer->release_write_chunk(timed_chunk, size);
+        this->chunks_pushed_++;
         read_ring_buffer->release_read_chunk(chunk);
         return ESP_OK;
       } break;
@@ -729,6 +807,10 @@ void SnapcastStream::stream_task_() {
   std::shared_ptr<ChunkedRingBuffer> stream_package_buffer = ChunkedRingBuffer::create(256 * 1024);
 
   auto on_exit_task = [&]() {
+    this->release_wifi_high_performance_();
+#if SNAPCAST_DEBUG
+    this->wifi_ps_verify_pending_ = false;
+#endif
     this->stream_task_exiting_ = true;
     if (this->outgoing_queue_) {
       // Drain and delete any pending messages so they don't leak.
@@ -902,12 +984,19 @@ void SnapcastStream::stream_task_() {
       if (notify_value & TASK_CLOSING_BIT) {
         // tx_rx task is closing, we can exit the loop
         if (this->want_streaming_.load(std::memory_order_relaxed)) {
+          this->reset_sync_wait_watchdog_();
+          this->sync_bootstrap_started_ms_ = 0;
+          this->sync_ready_logged_ = false;
           this->set_state_(StreamState::ERROR);
         }
         break;
       }
 
       if (notify_value & CONNECTION_CLOSED_BIT) {
+        this->release_wifi_high_performance_();
+        this->reset_sync_wait_watchdog_();
+        this->sync_bootstrap_started_ms_ = 0;
+        this->sync_ready_logged_ = false;
         this->codec_header_sent_ = false;
         if (destroy_requested) {
           // pass
@@ -935,15 +1024,24 @@ void SnapcastStream::stream_task_() {
       }
     }
 
+    this->poll_wifi_ps_verification_();
+
     if (this->state_ == StreamState::CONNECTED_IDLE || this->state_ == StreamState::STREAMING) {
       this->send_time_sync_();
       const uint32_t timeout = this->time_stats_.is_ready() ? 500 : 10;
       if (this->read_and_process_messages_(stream_package_buffer.get(), timeout) == ESP_FAIL) {
-        this->set_state_(StreamState::RECONNECTING);
-        xTaskNotify(transport_task_handle, DISCONNECT_BIT, eSetBits);
+        this->release_wifi_high_performance_();
+        if (this->state_ == StreamState::ERROR) {
+          this->want_streaming_.store(false, std::memory_order_relaxed);
+          ESP_LOGW(TAG, "stream in ERROR, deferring disconnect to client shutdown sequence");
+        } else {
+          this->set_state_(StreamState::RECONNECTING);
+          xTaskNotify(transport_task_handle, DISCONNECT_BIT, eSetBits);
+        }
         ESP_LOGW(TAG, "read_and_process_messages failed, curr_state: %d\n", this->state_);
         ESP_LOGW(TAG, "msg: %s\n", this->error_msg_.c_str());
       }
+      this->maybe_log_debug_stats_();
     }
   }
 
@@ -952,12 +1050,104 @@ void SnapcastStream::stream_task_() {
 
 void SnapcastStream::set_state_(StreamState new_state) {
   this->state_ = new_state;
+
   if (this->notification_target_ != nullptr) {
     xTaskNotify(this->notification_target_, static_cast<uint32_t>(this->state_), eSetValueWithOverwrite);
   }
   if (this->on_status_update_) {
     this->on_status_update_(this->state_, 255, false);  // 255 for volume means do not set
   }
+}
+
+void SnapcastStream::request_wifi_high_performance_() {
+#if defined(USE_WIFI_RUNTIME_POWER_SAVE) && defined(USE_WIFI)
+  if (this->wifi_high_perf_requested_) {
+    return;
+  }
+  auto *wifi = wifi::global_wifi_component;
+  if (wifi == nullptr) {
+    ESP_LOGW(TAG, "WiFi component unavailable; cannot request high-performance mode");
+    return;
+  }
+  if (!wifi->request_high_performance()) {
+    ESP_LOGW(TAG, "Failed to request WiFi high-performance mode");
+    return;
+  }
+  this->wifi_high_perf_requested_ = true;
+  ESP_LOGD(TAG, "Requested WiFi high-performance mode");
+  this->schedule_wifi_ps_verification_("request_high_performance", true);
+#endif
+}
+
+void SnapcastStream::release_wifi_high_performance_() {
+#if defined(USE_WIFI_RUNTIME_POWER_SAVE) && defined(USE_WIFI)
+#if SNAPCAST_DEBUG
+  this->wifi_ps_verify_pending_ = false;
+#endif
+  if (!this->wifi_high_perf_requested_) {
+    return;
+  }
+  auto *wifi = wifi::global_wifi_component;
+  if (wifi == nullptr) {
+    ESP_LOGW(TAG, "WiFi component unavailable; cannot release high-performance mode");
+    this->wifi_high_perf_requested_ = false;
+    return;
+  }
+  if (!wifi->release_high_performance()) {
+    ESP_LOGW(TAG, "Failed to release WiFi high-performance mode");
+    return;
+  }
+  this->wifi_high_perf_requested_ = false;
+  ESP_LOGD(TAG, "Released WiFi high-performance mode");
+#endif
+}
+
+void SnapcastStream::schedule_wifi_ps_verification_(const char *reason, bool expect_none) {
+#if SNAPCAST_DEBUG && defined(USE_ESP32) && defined(USE_WIFI_RUNTIME_POWER_SAVE) && defined(USE_WIFI)
+  this->wifi_ps_verify_pending_ = true;
+  this->wifi_ps_expect_none_ = expect_none;
+  this->wifi_ps_verify_reason_ = reason;
+  this->wifi_ps_verify_deadline_ms_ = millis() + WIFI_PS_VERIFY_TIMEOUT_MS;
+#else
+  (void) reason;
+  (void) expect_none;
+#endif
+}
+
+void SnapcastStream::poll_wifi_ps_verification_() {
+#if SNAPCAST_DEBUG && defined(USE_ESP32) && defined(USE_WIFI_RUNTIME_POWER_SAVE) && defined(USE_WIFI)
+  if (!this->wifi_ps_verify_pending_) {
+    return;
+  }
+
+  wifi_ps_type_t ps_mode = WIFI_PS_NONE;
+  const esp_err_t err = esp_wifi_get_ps(&ps_mode);
+  const uint32_t now = millis();
+  const bool timed_out = static_cast<int32_t>(now - this->wifi_ps_verify_deadline_ms_) >= 0;
+
+  if (err != ESP_OK) {
+    if (timed_out) {
+      ESP_LOGW(TAG, "WiFi PS verify (%s) failed: %s", this->wifi_ps_verify_reason_, esp_err_to_name(err));
+      this->wifi_ps_verify_pending_ = false;
+    }
+    return;
+  }
+
+  const bool at_expected_mode = this->wifi_ps_expect_none_ ? (ps_mode == WIFI_PS_NONE) : true;
+  if (at_expected_mode) {
+    ESP_LOGI(TAG, "WiFi PS verify (%s): current=%s (%d)", this->wifi_ps_verify_reason_, wifi_ps_mode_to_str_(ps_mode),
+             static_cast<int>(ps_mode));
+    this->wifi_ps_verify_pending_ = false;
+  } else {
+    if (timed_out) {
+      ESP_LOGW(TAG, "WiFi PS verify (%s): expected %s, current=%s (%d)", this->wifi_ps_verify_reason_,
+               this->wifi_ps_expect_none_ ? "NONE" : "ANY", wifi_ps_mode_to_str_(ps_mode), static_cast<int>(ps_mode));
+      this->wifi_ps_verify_pending_ = false;
+    }
+  }
+#else
+  // No-op in non-debug or unsupported targets.
+#endif
 }
 
 void SnapcastStream::get_target_snapshot_(std::string &server, uint32_t &port) {
@@ -982,8 +1172,15 @@ void SnapcastStream::start_streaming_() {
       return;
     }
     rb->reset();
+    this->reset_sync_wait_watchdog_();
+    this->sync_bootstrap_started_ms_ = millis();
+    this->sync_ready_logged_ = false;
     this->codec_header_sent_ = false;
+    this->resume_alignment_pending_ = true;
+    this->resume_alignment_started_ms_ = millis();
+    this->resume_alignment_dropped_ = 0;
     this->send_hello_();
+    this->request_wifi_high_performance_();
     this->set_state_(StreamState::STREAMING);
     return;
   }
@@ -994,7 +1191,76 @@ void SnapcastStream::stop_streaming_() {
     return;
   }
   ESP_LOGD(TAG, "received stop_streamin_()");
+  this->reset_sync_wait_watchdog_();
+  this->sync_bootstrap_started_ms_ = 0;
+  this->sync_ready_logged_ = false;
+  this->resume_alignment_pending_ = false;
+  this->release_wifi_high_performance_();
   this->set_state_(StreamState::CONNECTED_IDLE);
+}
+
+void SnapcastStream::reset_sync_wait_watchdog_() {
+  this->sync_wait_active_ = false;
+  this->sync_wait_started_ms_ = 0;
+  this->sync_wait_wire_start_ = 0;
+}
+
+void SnapcastStream::maybe_log_debug_stats_() {
+#if SNAPCAST_DEBUG
+  constexpr uint32_t STATS_LOG_INTERVAL_MS = 5000;
+  const uint32_t now = millis();
+
+  if (this->time_stats_.is_ready() && !this->sync_ready_logged_ && this->sync_bootstrap_started_ms_ != 0) {
+    this->sync_ready_logged_ = true;
+    ESP_LOGI(TAG, "sync ready in %lu ms (valid_samples=%lu, min_valid_samples=%lu)",
+             static_cast<unsigned long>(now - this->sync_bootstrap_started_ms_),
+             static_cast<unsigned long>(this->time_stats_.debug_sync_valid_samples()),
+             static_cast<unsigned long>(this->time_stats_.min_valid_samples_));
+  }
+
+  if ((now - this->debug_last_stats_log_ms_) < STATS_LOG_INTERVAL_MS) {
+    return;
+  }
+  this->debug_last_stats_log_ms_ = now;
+
+  const uint32_t wire_seen = this->wire_chunks_seen_;
+  const uint32_t pushed = this->chunks_pushed_;
+  const uint32_t dropped_not_ready = this->drop_not_ready_;
+  const uint32_t dropped_past = this->drop_past_;
+
+  const uint32_t wire_seen_delta = wire_seen - this->debug_last_wire_chunks_seen_;
+  const uint32_t pushed_delta = pushed - this->debug_last_chunks_pushed_;
+  const uint32_t dropped_not_ready_delta = dropped_not_ready - this->debug_last_drop_not_ready_;
+  const uint32_t dropped_past_delta = dropped_past - this->debug_last_drop_past_;
+
+  this->debug_last_wire_chunks_seen_ = wire_seen;
+  this->debug_last_chunks_pushed_ = pushed;
+  this->debug_last_drop_not_ready_ = dropped_not_ready;
+  this->debug_last_drop_past_ = dropped_past;
+
+  const uint32_t sync_requests_sent = this->time_stats_.debug_sync_requests_sent();
+  const uint32_t sync_matched = this->time_stats_.debug_sync_matched_responses();
+  const uint32_t sync_unmatched = this->time_stats_.debug_sync_unmatched_responses();
+  const uint32_t sync_valid_samples = this->time_stats_.debug_sync_valid_samples();
+  const uint32_t sync_invalid_rtt = this->time_stats_.debug_sync_invalid_rtt_samples();
+  const uint32_t sync_pending_drops = this->time_stats_.debug_sync_pending_overflow_drops();
+  const uint32_t sync_bootstrap_ms =
+      this->sync_bootstrap_started_ms_ == 0 ? 0 : static_cast<uint32_t>(now - this->sync_bootstrap_started_ms_);
+
+  ESP_LOGI(TAG,
+           "debug stats: state=%d ts_ready=%d codec_sent=%d wire=%lu (+%lu) pushed=%lu (+%lu) drop_not_ready=%lu "
+           "(+%lu) drop_past=%lu (+%lu) sync_req=%lu sync_match=%lu sync_unmatch=%lu sync_valid=%lu "
+           "sync_invalid_rtt=%lu sync_pending_drop=%lu sync_bootstrap_ms=%lu",
+           static_cast<int>(this->state_), this->time_stats_.is_ready(), this->codec_header_sent_,
+           static_cast<unsigned long>(wire_seen), static_cast<unsigned long>(wire_seen_delta),
+           static_cast<unsigned long>(pushed), static_cast<unsigned long>(pushed_delta),
+           static_cast<unsigned long>(dropped_not_ready), static_cast<unsigned long>(dropped_not_ready_delta),
+           static_cast<unsigned long>(dropped_past), static_cast<unsigned long>(dropped_past_delta),
+           static_cast<unsigned long>(sync_requests_sent), static_cast<unsigned long>(sync_matched),
+           static_cast<unsigned long>(sync_unmatched), static_cast<unsigned long>(sync_valid_samples),
+           static_cast<unsigned long>(sync_invalid_rtt), static_cast<unsigned long>(sync_pending_drops),
+           static_cast<unsigned long>(sync_bootstrap_ms));
+#endif
 }
 
 void SnapcastStream::send_message_(SnapcastMessage *msg) {
@@ -1021,12 +1287,7 @@ void SnapcastStream::send_report_() {
 }
 
 void SnapcastStream::send_time_sync_() {
-  uint32_t sync_interval = TIME_SYNC_INTERVAL_MS;
-  if (!this->time_stats_.is_ready()) {
-    sync_interval = 500;
-    SnapcastMessage *time_sync_msg0 = new TimeMessage();
-    this->send_message_(time_sync_msg0);
-  }
+  const uint32_t sync_interval = this->time_stats_.is_ready() ? TIME_SYNC_INTERVAL_MS : TIME_SYNC_BOOTSTRAP_INTERVAL_MS;
   if (millis() - this->last_time_sync_ > sync_interval) {
     SnapcastMessage *time_sync_msg = new TimeMessage();
     this->send_message_(time_sync_msg);
