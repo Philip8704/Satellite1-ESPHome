@@ -168,6 +168,13 @@ voice_assistant:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
     - script.execute: control_leds
   on_intent_progress:
+    # TEMP DEBUG: log every on_intent_progress firing so we can confirm the
+    # streaming TTS path is reaching the device. Remove once verified.
+    - lambda: |-
+        ESP_LOGW("tts_fwd", "on_intent_progress fired | URL='%s' | switch=%s | entity='%s'",
+                 x.c_str(),
+                 id(external_assist_speaker_switch).state ? "ON" : "OFF",
+                 id(external_assist_media_player_select).current_option().c_str());
     - if:
         condition:
           # A nonempty x variable means a streaming TTS url was sent to the local media player
@@ -180,6 +187,9 @@ voice_assistant:
               condition:
                 switch.is_on: external_assist_speaker_switch
               then:
+                - lambda: |-
+                    ESP_LOGW("tts_fwd", "on_intent_progress forwarding streaming TTS URL to external HA media player: %s",
+                             id(external_assist_media_player_select).current_option().c_str());
                 # Mute the internal speaker so the local media_player (already told to play
                 # this URL by the voice_assistant core) produces no audible output.
                 - dac_proxy.activate_line_out:
@@ -247,6 +257,15 @@ voice_assistant:
   # forward that URL to the external HA media player so we still skip the
   # second-generation cost of `tts.speak`.
   on_tts_end:
+    # TEMP DEBUG: log every on_tts_end firing so we can confirm the new
+    # code path is running on the device. Remove once external TTS routing
+    # is verified working.
+    - lambda: |-
+        ESP_LOGW("tts_fwd", "on_tts_end fired | URL='%s' | switch=%s | entity='%s' | already_forwarded=%s",
+                 x.c_str(),
+                 id(external_assist_speaker_switch).state ? "ON" : "OFF",
+                 id(external_assist_media_player_select).current_option().c_str(),
+                 id(external_tts_forwarded) ? "true" : "false");
     - if:
         condition:
           and:
@@ -254,6 +273,9 @@ voice_assistant:
             - lambda: 'return !id(external_tts_forwarded);'
             - lambda: 'return !x.empty();'
         then:
+          - lambda: |-
+              ESP_LOGW("tts_fwd", "on_tts_end forwarding TTS URL to external HA media player: %s",
+                       id(external_assist_media_player_select).current_option().c_str());
           - dac_proxy.activate_line_out:
           - media_player.stop:
               id: external_media_player
