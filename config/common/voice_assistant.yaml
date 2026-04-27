@@ -88,7 +88,15 @@ micro_wake_word:
                           then:
                             - media_player.stop:
                                 announcement: true
-                          # Start the voice assistant and play the wake sound, if enabled
+                          # Start the voice assistant and play the wake chime
+                          # (audible feedback that the device is listening).
+                          # The chime is forwarded to the external HA media
+                          # player via the play_sound script when external
+                          # mode is on, or played locally otherwise. We only
+                          # block on the 300ms post-chime delay for local
+                          # playback - in external mode that delay does not
+                          # synchronise with anything (Sonos is playing the
+                          # chime over the network) and just delays the mic.
                           else:
                             - if:
                                 condition:
@@ -99,10 +107,6 @@ micro_wake_word:
                                       priority: true
                                       sound_file: !lambda return id(wake_word_triggered_sound);
                                       sound_file_url: "${external_sound_base}/wake_word_triggered.flac"
-                                  # Only wait for the chime to finish on device playback.
-                                  # In external mode the chime is fired over the network
-                                  # to HA; blocking here just delays the mic opening
-                                  # without synchronising with external playback, so skip it.
                                   - if:
                                       condition:
                                         switch.is_off: external_assist_speaker_switch
@@ -168,10 +172,8 @@ voice_assistant:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
     - script.execute: control_leds
   on_intent_progress:
-    # TEMP DEBUG: log every on_intent_progress firing so we can confirm the
-    # streaming TTS path is reaching the device. Remove once verified.
     - lambda: |-
-        ESP_LOGW("tts_fwd", "on_intent_progress fired | URL='%s' | switch=%s | entity='%s'",
+        ESP_LOGD("tts_fwd", "on_intent_progress | URL='%s' | switch=%s | entity='%s'",
                  x.c_str(),
                  id(external_assist_speaker_switch).state ? "ON" : "OFF",
                  id(external_assist_media_player_select).current_option().c_str());
@@ -257,11 +259,8 @@ voice_assistant:
   # forward that URL to the external HA media player so we still skip the
   # second-generation cost of `tts.speak`.
   on_tts_end:
-    # TEMP DEBUG: log every on_tts_end firing so we can confirm the new
-    # code path is running on the device. Remove once external TTS routing
-    # is verified working.
     - lambda: |-
-        ESP_LOGW("tts_fwd", "on_tts_end fired | URL='%s' | switch=%s | entity='%s' | already_forwarded=%s",
+        ESP_LOGD("tts_fwd", "on_tts_end | URL='%s' | switch=%s | entity='%s' | already_forwarded=%s",
                  x.c_str(),
                  id(external_assist_speaker_switch).state ? "ON" : "OFF",
                  id(external_assist_media_player_select).current_option().c_str(),
@@ -274,7 +273,7 @@ voice_assistant:
             - lambda: 'return !x.empty();'
         then:
           - lambda: |-
-              ESP_LOGW("tts_fwd", "on_tts_end forwarding TTS URL to external HA media player: %s",
+              ESP_LOGD("tts_fwd", "on_tts_end forwarding TTS URL to %s",
                        id(external_assist_media_player_select).current_option().c_str());
           - dac_proxy.activate_line_out:
           - media_player.stop:

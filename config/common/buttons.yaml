@@ -141,18 +141,33 @@ binary_sensor:
                           then:
                             - voice_assistant.stop:
                           else:
+                            # External mode (V2 ceiling-mount) takes a
+                            # different path on purpose. The local
+                            # external_media_player is silent in this mode
+                            # (DAC routed to line-out, no internal speaker)
+                            # but it still owns a pipeline. Calling
+                            # media_player.pause: on it caused commands to
+                            # queue behind the paused local pipeline, so a
+                            # follow-up voice query or play_media would not
+                            # surface until the local player resumed. We
+                            # never touch it here. Instead: stop a TTS
+                            # announcement that was forwarded to the
+                            # external player, otherwise start a new query.
                             - if:
                                 condition:
-                                  media_player.is_announcing:
+                                  switch.is_on: external_assist_speaker_switch
                                 then:
-                                  media_player.stop:
-                                    announcement: true
-                                else:
                                   - if:
                                       condition:
-                                        media_player.is_playing:
+                                        and:
+                                          - lambda: 'return id(external_tts_forwarded);'
+                                          - lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
                                       then:
-                                        - media_player.pause:
+                                        - homeassistant.action:
+                                            action: media_player.media_stop
+                                            data:
+                                              entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                                        - lambda: id(external_tts_forwarded) = false;
                                       else:
                                         - if:
                                             condition:
@@ -161,13 +176,36 @@ binary_sensor:
                                                 - not:
                                                     voice_assistant.is_running
                                             then:
-                                              - script.execute:
-                                                  id: play_sound
-                                                  priority: true
-                                                  sound_file: !lambda return id(center_button_press_sound);
-                                                  sound_file_url: "${external_sound_base}/center_button_press.flac"
-                                              - delay: 300ms
                                               - voice_assistant.start:
+                                else:
+                                  # Local-speaker mode (V1): unchanged.
+                                  - if:
+                                      condition:
+                                        media_player.is_announcing:
+                                      then:
+                                        media_player.stop:
+                                          announcement: true
+                                      else:
+                                        - if:
+                                            condition:
+                                              media_player.is_playing:
+                                            then:
+                                              - media_player.pause:
+                                            else:
+                                              - if:
+                                                  condition:
+                                                    and:
+                                                      - switch.is_off: master_mute_switch
+                                                      - not:
+                                                          voice_assistant.is_running
+                                                  then:
+                                                    - script.execute:
+                                                        id: play_sound
+                                                        priority: true
+                                                        sound_file: !lambda return id(center_button_press_sound);
+                                                        sound_file_url: "${external_sound_base}/center_button_press.flac"
+                                                    - delay: 300ms
+                                                    - voice_assistant.start:
       # Double Click
       #  . Exposed as an event entity. To be used in automations inside Home Assistant
       - timing:

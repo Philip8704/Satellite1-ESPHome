@@ -111,13 +111,20 @@ binary_sensor:
       - script.execute: control_leds
 
 switch:
+  # V2 ceiling-mount default: ON. The Satellite1 routes ALL audio (wake
+  # chime path, TTS, button feedback, timer ring, etc.) through the
+  # external HA media player selected below. The internal speaker DAC is
+  # held muted (line-out active) so the device is silent locally, which is
+  # what you want when the device is mounted in a ceiling without a
+  # physical speaker. Flip this OFF for a desktop install with the
+  # internal speaker.
   - platform: template
     id: external_assist_speaker_switch
     name: External Assist Speaker
     icon: "mdi:speaker-wireless"
     entity_category: config
     optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: RESTORE_DEFAULT_ON
     turn_on_action:
       - switch.template.publish:
           id: external_assist_speaker_switch
@@ -139,14 +146,21 @@ switch:
           else:
             - dac_proxy.activate_speaker:
 
-  # Wake Word Sound Switch.
+  # Snapcast client (multi-room synchronized audio).
+  #
+  # V2 ceiling-mount default: OFF. Snapcast streams synchronized audio
+  # through the LOCAL i2s_audio_speaker pipeline, which is muted in
+  # external mode. Leaving the client running just wastes CPU and ring
+  # buffers on a ceiling-mount unit. Turn this back ON manually if you
+  # actually have a snapserver feeding multi-room audio to the device's
+  # line-out / internal speaker.
   - platform: template
     id: snapcast_switch
     name: Snapcast
     icon: "mdi:cast-audio"
     entity_category: config
     optimistic: true
-    restore_mode: RESTORE_DEFAULT_ON
+    restore_mode: RESTORE_DEFAULT_OFF
     on_turn_on:
       then:
         - snapcast.enable:
@@ -334,7 +348,13 @@ script:
                     ->play_file(sound_file, true, false);
                 }
 
-  # Script to increased/decreased volume
+  # Script to increased/decreased volume.
+  #
+  # In external mode the local external_media_player is silent (DAC routed
+  # to line-out, no internal speaker on a ceiling-mount install) so its
+  # volume slider has no audible effect. Forward volume commands directly
+  # to the configured external HA media player so the buttons control the
+  # speaker the user actually hears (e.g. Sonos).
   - id: control_volume
     mode: restart
     parameters:
@@ -343,11 +363,31 @@ script:
       - delay: 16ms
       - if:
           condition:
-            lambda: return increase_volume;
+            and:
+              - switch.is_on: external_assist_speaker_switch
+              - lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
           then:
-            - media_player.volume_up:
+            - if:
+                condition:
+                  lambda: return increase_volume;
+                then:
+                  - homeassistant.action:
+                      action: media_player.volume_up
+                      data:
+                        entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                else:
+                  - homeassistant.action:
+                      action: media_player.volume_down
+                      data:
+                        entity_id: !lambda return id(external_assist_media_player_select).current_option();
           else:
-            - media_player.volume_down:
+            - if:
+                condition:
+                  lambda: return increase_volume;
+                then:
+                  - media_player.volume_up:
+                else:
+                  - media_player.volume_down:
       - script.execute: control_leds
       - delay: 2s
       - lambda: id(volume_buttons_touched) = false;
