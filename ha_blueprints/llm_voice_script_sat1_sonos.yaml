@@ -1,0 +1,496 @@
+blueprint:
+  name: Music Assistant voice requests (Sat1 + Sonos optimized)
+  source_url: https://github.com/Philip8704/Satellite1-ESPHome/blob/develop-belo/ha_blueprints/llm_voice_script_sat1_sonos.yaml
+  description: |
+    ![Image](https://github.com/music-assistant/voice-support/blob/main/assets/music-assistant.png?raw=true)
+
+    Drop-in optimization of the upstream Music Assistant LLM voice blueprint
+    (TheFes / music-assistant/voice-support), tuned for:
+
+    - Voice requests originating from FutureProofHomes Satellite1 devices
+    - Playback through Sonos via Music Assistant — bypasses Sonos's audio-clip
+      path so there is no notification ding before music starts
+    - Lower perceived latency: `music_assistant.play_media` and
+      `media_player.shuffle_set` run in parallel, and `shuffle_set` is skipped
+      entirely when shuffle was not requested (the most common case)
+    - Smarter target resolution: when the LLM does not pass an `area` or
+      `media_player`, the script falls back to the area of the device that
+      triggered the voice request (so "play Queen" on a ceiling Sat1 plays
+      in that room without configuring a default per device)
+    - Configurable Music Assistant queue behavior (Replace / Add to queue /
+      Play next) and announce-mode controls
+    - Returns a human-readable response so Assist tells the user what is
+      playing instead of going silent
+
+    ## Setup
+    1. Import this blueprint
+    2. Create a script from it with the recommended description below
+    3. **Expose the script to Assist** (Settings → Voice assistants →
+       click your assistant → Expose entities → toggle the script)
+    4. Make sure each Sat1 device is assigned to an area in HA — that area
+       is the only fallback when the LLM does not specify a target
+
+    ## Recommended script description (paste into the script's description)
+    `Plays music via Music Assistant. Required arguments: media_type, media_id,
+    shuffle. Optional: artist, album, area, media_player. Use this tool whenever
+    the user requests music — songs, albums, artists, playlists, or radio. The
+    area of the calling device is used automatically when no target is specified.`
+
+    ## Variables available for additional actions
+    | Variable | Description |
+    |---|---|
+    | `media_id` | Track / album / artist / playlist / radio name. Multiple values are `;`-separated. |
+    | `media_type` | `track`, `album`, `artist`, `playlist`, or `radio`. |
+    | `artist` | Artist requested (empty if multiple or N/A). |
+    | `album` | Album requested (empty if multiple or N/A). |
+    | `media_description` | Human description of the request, e.g. "the best Queen songs". |
+    | `area` | Area IDs determined by the LLM, or empty. |
+    | `media_player` | MA media_player entity_ids determined by the LLM, or empty. |
+    | `caller_area` | The area_id of the device that triggered the voice request, if available. |
+    | `target_data` | Resolved `{area_id, entity_id}` dict actually used for playback. |
+    | `shuffle` | Whether shuffle was requested. |
+    | `enqueue_mode` | `replace`, `add`, or `play_next` (resolved value). |
+  domain: script
+  author: TheFes (upstream) / Sat1 + Sonos optimization
+  homeassistant:
+    min_version: 2024.12.0
+  input:
+    music_assistant_settings:
+      name: Music Assistant playback settings
+      icon: mdi:music
+      description: How playback is queued by default. There is no hardcoded fallback player — when the LLM does not specify a target, the area of the calling Sat1 device is used.
+      input:
+        play_continuously:
+          name: Radio Mode
+          description: |
+            Whether the player keeps adding similar tracks after the requested
+            ones finish.
+            - **Always** (default): continuous playback, ignored for `radio` requests.
+            - **Use player settings**: respect each MA player's "Don't stop the music" setting.
+            - **Never**: stops after the LLM-selected tracks finish.
+          selector:
+            select:
+              options:
+                - Always
+                - Use player settings
+                - Never
+              multiple: false
+              custom_value: false
+              sort: false
+          default: Always
+        enqueue_default:
+          name: Default queue behavior
+          description: |
+            What happens when a new voice request comes in while music is
+            already playing.
+            - **Replace**: stop current playback and start the new request (default — voice-feels-instant).
+            - **Add to queue**: append the new request after the current queue.
+            - **Play next**: insert after the current track, then resume the queue.
+          selector:
+            select:
+              options:
+                - Replace
+                - Add to queue
+                - Play next
+              multiple: false
+              custom_value: false
+              sort: false
+          default: Replace
+    prompt_settings:
+      name: Prompt settings for the LLM
+      icon: mdi:robot
+      description: Fine-tune the prompts your LLM sees. Defaults usually work.
+      collapsed: true
+      input:
+        media_type_prompt:
+          name: Media Type Prompt
+          description: The prompt that the LLM will use to provide the media_type.
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Required. The kind of thing being requested. One of:
+            - "track" — a specific track or `;`-separated list of tracks.
+            - "album" — an album or `;`-separated list of albums.
+            - "artist" — an artist.
+            - "playlist" — specifically requested playlist.
+            - "radio" — a radio station.
+            - "genre" — a genre or vibe (e.g. "house", "lofi", "jazz",
+              "90s rock"). The script translates this into a track-style
+              request with continuous-mix mode forced on, so Music Assistant
+              keeps queuing similar tracks indefinitely.
+        artist_prompt:
+          name: Artist Prompt
+          description: The prompt that the LLM will use to provide the artist.
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Optional hint. The artist the user requested, or the artist of a
+            specific track if mentioned. Leave unset if unknown or multiple.
+        album_prompt:
+          name: Album Prompt
+          description: The prompt that the LLM will use to provide the album.
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Optional hint. The album the user requested, or the album a
+            specific track is from if mentioned. Leave unset if unknown or
+            multiple.
+        media_id_prompt:
+          name: Media ID Prompt
+          description: The prompt that the LLM will use to provide the media_id.
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Required. The most specific value, depending on media_type:
+            - track: single track name or `;`-separated list. If multiple
+              artists appear in the result, use "Artist - Song" format. If
+              all songs are from one artist, put that artist in `artist`
+              and use plain song names.
+            - album: album name or `;`-separated list of albums.
+            - artist: artist name.
+            - playlist: playlist name (drop the word "playlist" itself).
+            - radio: radio channel name.
+            - genre: the genre name itself (e.g. "house", "lofi").
+        media_description_prompt:
+          name: Media Description Prompt
+          description: Prompt for the human description of what is being played.
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Optional. Human description of what's being played, used in the
+            spoken reply. For "Play the best Queen songs in the living
+            room", this would be "the best Queen songs". If unset, the
+            spoken reply uses media_id.
+        area_prompt:
+          name: Area Prompt
+          description: The prompt that the LLM will use to provide the area.
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Optional. The area(s) for which the music is requested. If the
+            request does not mention a target, omit this — the script will
+            fall back to the area of the device that received the voice
+            command.
+            Only use both `area` and `media_player` together if both are
+            explicitly mentioned in the request.
+        media_player_prompt:
+          name: Media Player Prompt
+          description: The prompt that the LLM will use to provide the media player.
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Optional. Only use `media_player` if the request specifically
+            names a media player. Must be the entity_id of a Music Assistant
+            media player.
+            Only use both `area` and `media_player` together if both are
+            explicitly mentioned in the request.
+        shuffle_prompt:
+          name: Shuffle Prompt
+          description: Prompt for whether shuffle should be enabled.
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Optional, defaults to false. Set to true if the request mentions
+            shuffling.
+            Examples:
+              - "Shuffle Muse"          → true
+              - "Play Billy Talent"     → false
+              - "Shuffle Liked Songs"   → true
+              - "Play Guns and Roses"   → false
+    addition_conditions_actions:
+      name: Additional actions
+      icon: mdi:wrench
+      description: |
+        Run after Music Assistant accepts the request. All variables in the
+        description are available, plus `target_data`, `caller_area`, and
+        `enqueue_mode`.
+      collapsed: true
+      input:
+        actions:
+          name: Additional actions
+          selector:
+            action: {}
+          default: []
+
+mode: parallel
+max_exceeded: silent
+description: |
+  Plays music via Music Assistant. Use this tool whenever the user asks to
+  play, shuffle, queue, or stream music — songs, albums, artists, playlists,
+  radio stations, or whole genres. Do NOT use this tool for podcasts or
+  audiobooks.
+
+  Required arguments:
+    - media_type: one of track, album, artist, playlist, radio, genre.
+    - media_id: the actual name to play. For track/album/artist/playlist
+      this is the title or person; for radio it's the station name; for
+      genre it's just the genre word ("house", "lofi", "90s rock").
+
+  Optional arguments (only set when the user mentions them):
+    - artist / album: hints to disambiguate. Skip them otherwise.
+    - shuffle: true ONLY if the user said "shuffle". Default false.
+    - media_description: a short human phrase for the spoken reply
+      ("the best Queen songs"). Skip if obvious from media_id.
+    - area: room name(s) — only when the user names a room.
+    - media_player: a specific MA player entity — only when the user
+      names a specific speaker by name.
+
+  Targeting rules:
+    - If the user names a room, set area.
+    - If the user names a specific speaker, set media_player.
+    - If the user says nothing about WHERE, leave both empty — the
+      script will play in the room of the device that heard the request.
+
+  How to pick media_type:
+    - "play Bohemian Rhapsody" -> track, media_id "Bohemian Rhapsody",
+      artist "Queen" if known.
+    - "play A Night at the Opera" -> album, media_id is the album name.
+    - "play Queen" / "shuffle Queen" -> artist, media_id "Queen",
+      shuffle true on the second example.
+    - "play my workout playlist" -> playlist, media_id "workout".
+    - "play BBC Radio 1" -> radio, media_id "BBC Radio 1".
+    - "play house music" / "put on some lofi" / "play 90s rock" ->
+      genre, media_id is the genre word(s). The script will keep
+      adding similar tracks indefinitely.
+
+  Multiple items: use ";" to separate (e.g. media_id "Hotel California;
+  Take It Easy" with media_type track).
+
+fields:
+  media_type:
+    selector:
+      select:
+        options:
+          - track
+          - album
+          - artist
+          - playlist
+          - radio
+          - genre
+    name: Media Type
+    description: !input media_type_prompt
+    required: true
+  media_id:
+    selector:
+      text:
+    name: Media ID
+    description: !input media_id_prompt
+    required: true
+  artist:
+    selector:
+      text:
+    name: Artist
+    description: !input artist_prompt
+  album:
+    selector:
+      text:
+    name: Album
+    description: !input album_prompt
+  media_description:
+    selector:
+      text:
+    name: Media Description
+    description: !input media_description_prompt
+  area:
+    selector:
+      area:
+        entity:
+          integration: music_assistant
+          domain: media_player
+        multiple: true
+    name: Area
+    description: !input area_prompt
+  media_player:
+    selector:
+      entity:
+        filter:
+          integration: music_assistant
+          domain: media_player
+        multiple: true
+    name: Media Player
+    description: !input media_player_prompt
+  shuffle:
+    selector:
+      boolean:
+    name: Shuffle
+    description: !input shuffle_prompt
+
+sequence:
+  # ---------------------------------------------------------------------------
+  # 1. Resolve targets, cache lookups, build action payload.
+  #    A single variables block keeps the runtime dictionary compact and avoids
+  #    re-evaluating templates during the action calls below.
+  # ---------------------------------------------------------------------------
+  - variables:
+      version: "2026-04-27 sat1+sonos"
+
+      # Inputs surfaced into the script context.
+      play_continuously: !input play_continuously
+      enqueue_default: !input enqueue_default
+      shuffle_requested: "{{ shuffle | default(false, true) | bool(false) }}"
+
+      # Cache MA entity lookups once. The upstream blueprint recomputes
+      # `integration_entities('music_assistant')` inside multiple templates;
+      # we do it once and reuse.
+      ma_entities: "{{ integration_entities('music_assistant') }}"
+      ma_friendly_names: "{{ ma_entities | map('state_attr', 'friendly_name') | list }}"
+
+      # Resolve any LLM-provided media_player references (entity_id OR friendly
+      # name) into a clean list of MA entity_ids.
+      player_data: >-
+        {% set ns = namespace(players=[]) %}
+        {% for p in media_player | default([], true) %}
+          {% if p in ma_entities %}
+            {% set ns.players = ns.players + [p] %}
+          {% elif p in ma_friendly_names %}
+            {% set ns.players = ns.players + (ma_entities | select('is_state_attr', 'friendly_name', p) | list) %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.players }}
+
+      # Calling-device area fallback. When HA's Assist pipeline runs this
+      # script as an LLM tool, `device_id` is shadowed in the script context
+      # with the string device_id of the device that picked up the voice
+      # command (the Sat1 in that room). When run manually, `device_id`
+      # resolves to HA's global template *function* of the same name — which
+      # is truthy and would crash device_attr. The `is string` test is what
+      # distinguishes "Assist passed a real device_id" from "the function".
+      caller_area: >-
+        {{ device_attr(device_id, 'area_id') | default('', true)
+           if (device_id is defined and device_id is string and device_id) else '' }}
+
+      # Translate enqueue_default into the value MA expects.
+      enqueue_mode: >-
+        {% set m = {'Replace': 'replace', 'Add to queue': 'add', 'Play next': 'play_next'} %}
+        {{ m.get(enqueue_default, 'replace') }}
+
+      # Final target_data. Priority:
+      #   1. Explicit area from the LLM
+      #   2. Explicit media_player from the LLM
+      #   3. Caller's device area (Sat1 fallback — the ONLY fallback)
+      #   4. Stop with a helpful response
+      target_data:
+        area_id: >-
+          {% if area %}
+            {{ area }}
+          {% elif not player_data and caller_area %}
+            {{ [caller_area] }}
+          {% else %}
+            NA
+          {% endif %}
+        entity_id: >-
+          {% if player_data %}
+            {{ player_data }}
+          {% else %}
+            NA
+          {% endif %}
+
+  # ---------------------------------------------------------------------------
+  # 2. Bail out early if there is genuinely no target. Returning a response
+  #    string lets the LLM speak something useful instead of going silent.
+  # ---------------------------------------------------------------------------
+  - variables:
+      invalid_target: >-
+        I couldn't figure out which speaker to play that on. Try asking again
+        with the room name, like "play Queen in the bedroom".
+  - if:
+      - condition: template
+        value_template: >-
+          {{ target_data.area_id == 'NA' and target_data.entity_id == 'NA' }}
+    then:
+      - stop: ""
+        response_variable: invalid_target
+
+  # ---------------------------------------------------------------------------
+  # 3. Build the play_media payload and the resolved target.
+  # ---------------------------------------------------------------------------
+  - variables:
+      # `genre` is a pseudo-type the LLM can pick. MA's play_media doesn't
+      # accept it natively, so we translate to `track` and force radio_mode
+      # so MA generates a continuous mix seeded from the genre name.
+      action_data:
+        media_id: >-
+          {{ media_id.split(';') | map('trim') | list if ';' in media_id else media_id }}
+        media_type: "{{ 'track' if media_type == 'genre' else media_type }}"
+        artist: "{{ artist | default('NA', true) }}"
+        album: "{{ album | default('NA', true) }}"
+        radio_mode: >-
+          {{ true if media_type == 'genre'
+             else false if play_continuously == 'Never'
+             else play_continuously == 'Always' and media_type != 'radio'
+             or 'NA' }}
+        enqueue: "{{ enqueue_mode }}"
+      resolved_target: >-
+        {{ dict(target_data.items() | rejectattr('1', 'eq', 'NA')) }}
+      resolved_action_data: >-
+        {{ dict(action_data.items() | rejectattr('1', 'eq', 'NA')) }}
+
+  # ---------------------------------------------------------------------------
+  # 4. Fire play_media and (only if needed) shuffle_set in parallel.
+  #    Running them in parallel saves a service-call hop on the perceived
+  #    latency between voice command end and audio start. Shuffle is skipped
+  #    entirely when the user did not ask for it — preserves whatever the
+  #    player was already set to.
+  # ---------------------------------------------------------------------------
+  - parallel:
+      - alias: Play music using Music Assistant
+        action: music_assistant.play_media
+        data: "{{ resolved_action_data }}"
+        target: "{{ resolved_target }}"
+      - alias: Set shuffle (only when explicitly requested)
+        if:
+          - condition: template
+            value_template: "{{ shuffle_requested }}"
+        then:
+          - action: media_player.shuffle_set
+            data:
+              shuffle: true
+            target: "{{ resolved_target }}"
+
+  # ---------------------------------------------------------------------------
+  # 5. Run any user-supplied additional actions.
+  # ---------------------------------------------------------------------------
+  - alias: User-defined post-actions
+    sequence: !input actions
+
+  # ---------------------------------------------------------------------------
+  # 6. Return a friendly response so Assist tells the user what is happening
+  #    instead of acknowledging silently. The LLM can override or rephrase
+  #    this in its own reply.
+  # ---------------------------------------------------------------------------
+  - variables:
+      spoken_target: >-
+        {%- set ids = target_data.entity_id if target_data.entity_id != 'NA' else [] -%}
+        {%- if ids and ids is iterable and ids is not string -%}
+          {{ ids | map('state_attr', 'friendly_name') | reject('none') | list | join(', ') }}
+        {%- elif ids and ids is string -%}
+          {{ state_attr(ids, 'friendly_name') or ids }}
+        {%- elif target_data.area_id != 'NA' -%}
+          {%- set aids = target_data.area_id if target_data.area_id is iterable and target_data.area_id is not string else [target_data.area_id] -%}
+          {{ aids | map('area_name') | reject('none') | list | join(', ') }}
+        {%- endif -%}
+      reply: >-
+        {%- set what = media_description if media_description else media_id -%}
+        {%- if spoken_target -%}
+          Playing {{ what }} on {{ spoken_target }}.
+        {%- else -%}
+          Playing {{ what }}.
+        {%- endif -%}
+  - stop: ""
+    response_variable: reply
