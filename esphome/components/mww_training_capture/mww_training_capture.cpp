@@ -250,11 +250,7 @@ void MwwTrainingCapture::finish_pending_capture_() {
   // Compute slice we want: [target - (pre+post) samples, target). Keep this
   // conservative; building a multi-second WAV in std::vector can exhaust
   // internal heap on ESP32 builds where exceptions are disabled.
-  const uint64_t requested_pre_samples = (uint64_t)(this->pre_buffer_seconds_ * this->sample_rate_);
-  const uint64_t max_pre_samples = this->sample_rate_;  // debug-safe 1 s cap
-  const uint64_t pre_samples = std::min<uint64_t>(requested_pre_samples, max_pre_samples);
-  const uint64_t post_samples = (uint64_t) this->post_buffer_ms_ * this->sample_rate_ / 1000ULL;
-  const uint64_t total_slice = pre_samples + post_samples;
+  const uint64_t total_slice = std::min<uint64_t>(this->sample_rate_ / 2, 8000);  // debug-safe 0.5 s cap
   const uint64_t slice_len = std::min<uint64_t>(std::min<uint64_t>(total_slice, (uint64_t) this->ring_capacity_),
                                                this->capture_target_total_);
   const uint64_t start_sample = this->capture_target_total_ - slice_len;
@@ -263,10 +259,6 @@ void MwwTrainingCapture::finish_pending_capture_() {
     this->capture_pending_ = false;
     return;
   }
-
-  std::vector<int16_t> samples;
-  samples.reserve((size_t) slice_len);
-  samples.resize((size_t) slice_len, 0);
 
   // Find the ring index that corresponds to ``start_sample``. ring_head is
   // where the next write will go, so the most-recent sample lives at
@@ -281,12 +273,48 @@ void MwwTrainingCapture::finish_pending_capture_() {
     return;
   }
   size_t start_idx = (head + this->ring_capacity_ - (size_t) back_off) % this->ring_capacity_;
-  for (size_t i = 0; i < (size_t) slice_len; ++i) {
-    samples[i] = this->ring_[(start_idx + i) % this->ring_capacity_];
-  }
 
   // Build the WAV blob.
-  this->build_wav_(samples, this->last_capture_wav_);
+  this->last_capture_wav_.clear();
+  this->last_capture_wav_.reserve(44 + (size_t) slice_len * sizeof(int16_t));
+  const uint32_t data_bytes = (uint32_t)(slice_len * sizeof(int16_t));
+  const uint32_t riff_size = 36 + data_bytes;
+  const uint16_t channels = 1;
+  const uint16_t bits_per_sample = 16;
+  const uint16_t block_align = channels * (bits_per_sample / 8);
+  const uint32_t byte_rate = this->sample_rate_ * block_align;
+  auto push32 = [this](uint32_t v) {
+    this->last_capture_wav_.push_back((uint8_t)(v & 0xFF));
+    this->last_capture_wav_.push_back((uint8_t)((v >> 8) & 0xFF));
+    this->last_capture_wav_.push_back((uint8_t)((v >> 16) & 0xFF));
+    this->last_capture_wav_.push_back((uint8_t)((v >> 24) & 0xFF));
+  };
+  auto push16 = [this](uint16_t v) {
+    this->last_capture_wav_.push_back((uint8_t)(v & 0xFF));
+    this->last_capture_wav_.push_back((uint8_t)((v >> 8) & 0xFF));
+  };
+  auto push_str = [this](const char *s) {
+    for (; *s != '\0'; ++s) {
+      this->last_capture_wav_.push_back((uint8_t) *s);
+    }
+  };
+  push_str("RIFF");
+  push32(riff_size);
+  push_str("WAVE");
+  push_str("fmt ");
+  push32(16);
+  push16(1);
+  push16(channels);
+  push32(this->sample_rate_);
+  push32(byte_rate);
+  push16(block_align);
+  push16(bits_per_sample);
+  push_str("data");
+  push32(data_bytes);
+  for (size_t i = 0; i < (size_t) slice_len; ++i) {
+    const int16_t sample = this->ring_[(start_idx + i) % this->ring_capacity_];
+    push16((uint16_t) sample);
+  }
   this->last_wake_word_ = this->capture_wake_word_;
   this->last_max_prob_ = this->capture_max_prob_;
   this->last_avg_prob_ = this->capture_avg_prob_;
