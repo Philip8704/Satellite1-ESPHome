@@ -392,10 +392,8 @@ mww_training_capture:
   require_vad: true
   enabled_by_default: false
   models:
-    - wake_word_model: hey_jarvis
-      lower_cutoff: 0.55     # hey_jarvis sits high, so the band starts high
-    - wake_word_model: okay_nabu
-      lower_cutoff: 0.40
+    - wake_word_model: hey_haeris
+      lower_cutoff: 0.55
   on_near_miss_detected:
     # The trigger fires after MWW has run an inference whose max sliding-
     # window probability lands in [lower_cutoff, real_cutoff). The component
