@@ -111,10 +111,12 @@ class MwwTrainingCapture : public Component {
   std::atomic<size_t> ring_head_{0};
   uint32_t sample_rate_{16000};
   bool ring_initialised_{false};
+  uint32_t last_debug_log_ms_{0};
 
   // ------------------------- Pending capture state ------------------------
   bool capture_pending_{false};
   uint64_t capture_target_total_{0};
+  uint32_t capture_queued_ms_{0};
   std::string capture_wake_word_;
   uint8_t capture_max_prob_{0};
   uint8_t capture_avg_prob_{0};

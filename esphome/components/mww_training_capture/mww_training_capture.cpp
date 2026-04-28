@@ -165,11 +165,11 @@ void MwwTrainingCapture::check_near_misses_() {
   }
 
 #ifdef USE_MICRO_WAKE_WORD_VAD
-  const bool vad_ok = this->require_vad_ ? this->mww_->get_vad_state() : true;
+  const bool vad_active = this->mww_->get_vad_state();
 #else
-  const bool vad_ok = true;
+  const bool vad_active = true;
 #endif
-  if (!vad_ok)
+  if (this->require_vad_ && !vad_active)
     return;
 
   const uint32_t now = millis();
@@ -193,7 +193,7 @@ void MwwTrainingCapture::check_near_misses_() {
     // the user accidentally set lower_cutoff >= real_cutoff we silently no-op.
     if (max_prob < entry.lower_cutoff)
       continue;
-    if (max_prob >= upper_bound)
+    if (max_prob >= upper_bound && vad_active)
       continue;
 
     // Stage a capture. We pin the "end" sample index to where the producer
@@ -203,21 +203,43 @@ void MwwTrainingCapture::check_near_misses_() {
     const uint64_t post_samples = (uint64_t) this->post_buffer_ms_ * this->sample_rate_ / 1000ULL;
     this->capture_pending_ = true;
     this->capture_target_total_ = total_written + post_samples;
+    this->capture_queued_ms_ = now;
     this->capture_wake_word_ = entry.model->get_wake_word();
     this->capture_max_prob_ = max_prob;
     this->capture_avg_prob_ = avg_prob;
     entry.last_capture_ms = now;
 
-    ESP_LOGD(TAG, "Near-miss queued: %s max=%.2f avg=%.2f (real cutoff=%.2f)",
-             this->capture_wake_word_.c_str(), max_prob / 255.0f, avg_prob / 255.0f, real_cutoff / 255.0f);
+    ESP_LOGD(TAG, "Near-miss queued: %s max=%.2f avg=%.2f (real cutoff=%.2f, vad=%s, samples=%llu target=%llu)",
+             this->capture_wake_word_.c_str(), max_prob / 255.0f, avg_prob / 255.0f, real_cutoff / 255.0f,
+             vad_active ? "yes" : "no", (unsigned long long) total_written,
+             (unsigned long long) this->capture_target_total_);
     return;  // one capture at a time
   }
 }
 
 void MwwTrainingCapture::finish_pending_capture_() {
   const uint64_t total_written = this->total_samples_written_.load(std::memory_order_acquire);
-  if (total_written < this->capture_target_total_)
-    return;  // wait for post-buffer to fill
+  if (total_written < this->capture_target_total_) {
+    const uint32_t now = millis();
+    const uint32_t max_wait_ms = this->post_buffer_ms_ + 1000;
+    if (now - this->capture_queued_ms_ < max_wait_ms) {
+      if (now - this->last_debug_log_ms_ > 1000) {
+        ESP_LOGD(TAG, "Waiting for capture post-buffer: samples=%llu target=%llu",
+                 (unsigned long long) total_written, (unsigned long long) this->capture_target_total_);
+        this->last_debug_log_ms_ = now;
+      }
+      return;
+    }
+    ESP_LOGW(TAG, "Capture post-buffer timed out: samples=%llu target=%llu; finishing with available audio",
+             (unsigned long long) total_written, (unsigned long long) this->capture_target_total_);
+    this->capture_target_total_ = total_written;
+  }
+
+  if (this->capture_target_total_ == 0) {
+    ESP_LOGW(TAG, "Capture had no audio samples; dropping");
+    this->capture_pending_ = false;
+    return;
+  }
 
   // Compute slice we want: [target - (pre+post) samples, target).
   const uint64_t pre_samples = (uint64_t)(this->pre_buffer_seconds_ * this->sample_rate_);
@@ -227,7 +249,7 @@ void MwwTrainingCapture::finish_pending_capture_() {
   const uint64_t safe_capacity = this->ring_capacity_ > (this->sample_rate_ / 10)
                                      ? (uint64_t)(this->ring_capacity_ - this->sample_rate_ / 10)
                                      : (uint64_t) this->ring_capacity_;
-  const uint64_t slice_len = std::min<uint64_t>(total_slice, safe_capacity);
+  const uint64_t slice_len = std::min<uint64_t>(std::min<uint64_t>(total_slice, safe_capacity), this->capture_target_total_);
   const uint64_t start_sample = this->capture_target_total_ - slice_len;
   if (start_sample > this->capture_target_total_) {
     // Underflow guard
