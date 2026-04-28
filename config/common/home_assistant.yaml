@@ -51,9 +51,11 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_OFF
     turn_on_action:
-      - mww_training_capture.enable: mww_capture
+      - mww_training_capture.enable:
+          id: mww_capture
     turn_off_action:
-      - mww_training_capture.disable: mww_capture
+      - mww_training_capture.disable:
+          id: mww_capture
 
   # Wake Word Sound Switch.
   - platform: template
