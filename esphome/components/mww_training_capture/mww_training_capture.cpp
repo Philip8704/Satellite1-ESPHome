@@ -134,6 +134,10 @@ void MwwTrainingCapture::on_audio_data_(const std::vector<uint8_t> &data) {
   const size_t sample_count = data.size() / sizeof(int16_t);
   if (sample_count == 0)
     return;
+  if (this->audio_debug_count_ < 5) {
+    ESP_LOGD(TAG, "Audio tap received %u bytes / %u samples", (unsigned) data.size(), (unsigned) sample_count);
+    this->audio_debug_count_++;
+  }
 
   // Single producer (audio thread) writes; main loop only reads. The ring
   // head is published with release semantics so the consumer's acquire load
@@ -160,6 +164,9 @@ void MwwTrainingCapture::loop() {
 
 void MwwTrainingCapture::check_near_misses_() {
   if (!this->enabled_ || this->capture_pending_ || this->mww_ == nullptr) {
+    return;
+  }
+  if (!this->mww_->is_running()) {
     return;
   }
 

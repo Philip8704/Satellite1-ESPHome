@@ -112,6 +112,7 @@ class MwwTrainingCapture : public Component {
   uint32_t sample_rate_{16000};
   bool ring_initialised_{false};
   uint32_t last_debug_log_ms_{0};
+  uint32_t audio_debug_count_{0};
 
   // ------------------------- Pending capture state ------------------------
   bool capture_pending_{false};
