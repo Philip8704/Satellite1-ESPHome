@@ -175,14 +175,16 @@ async def to_code(config):
         )
 
 
-CAPTURE_ACTION_SCHEMA = cv.Schema({cv.GenerateID(): cv.use_id(MwwTrainingCapture)})
+CAPTURE_ACTION_SCHEMA = automation.maybe_simple_id(
+    {cv.GenerateID(): cv.use_id(MwwTrainingCapture)}
+)
 
 
 @automation.register_action(
-    "mww_training_capture.enable", EnableAction, CAPTURE_ACTION_SCHEMA
+    "mww_training_capture.enable", EnableAction, CAPTURE_ACTION_SCHEMA, synchronous=True
 )
 @automation.register_action(
-    "mww_training_capture.disable", DisableAction, CAPTURE_ACTION_SCHEMA
+    "mww_training_capture.disable", DisableAction, CAPTURE_ACTION_SCHEMA, synchronous=True
 )
 @automation.register_condition(
     "mww_training_capture.is_enabled", IsEnabledCondition, CAPTURE_ACTION_SCHEMA
