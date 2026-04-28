@@ -132,15 +132,15 @@ class MwwTrainingCapture : public Component {
 // ------------------------- Automation glue --------------------------------
 template<typename... Ts> class EnableAction : public Action<Ts...>, public Parented<MwwTrainingCapture> {
  public:
-  void play(Ts... x) override { this->parent_->enable(); }
+  void play(const Ts &...x) override { this->parent_->enable(); }
 };
 template<typename... Ts> class DisableAction : public Action<Ts...>, public Parented<MwwTrainingCapture> {
  public:
-  void play(Ts... x) override { this->parent_->disable(); }
+  void play(const Ts &...x) override { this->parent_->disable(); }
 };
 template<typename... Ts> class IsEnabledCondition : public Condition<Ts...>, public Parented<MwwTrainingCapture> {
  public:
-  bool check(Ts... x) override { return this->parent_->is_enabled(); }
+  bool check(const Ts &...x) override { return this->parent_->is_enabled(); }
 };
 
 }  // namespace mww_training_capture

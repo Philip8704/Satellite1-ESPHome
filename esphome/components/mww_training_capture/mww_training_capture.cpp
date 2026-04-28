@@ -154,7 +154,11 @@ void MwwTrainingCapture::check_near_misses_() {
     return;
   }
 
+#ifdef USE_MICRO_WAKE_WORD_VAD
   const bool vad_ok = this->require_vad_ ? this->mww_->get_vad_state() : true;
+#else
+  const bool vad_ok = true;
+#endif
   if (!vad_ok)
     return;
 
