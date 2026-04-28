@@ -408,7 +408,7 @@ mww_training_capture:
     - http_request.post:
         url: ${mww_capture_endpoint}
         capture_response: false
-        headers:
+        request_headers:
           Content-Type: audio/wav
           X-Wake-Word: !lambda 'return wake_word;'
           X-Max-Probability: !lambda 'char b[8]; snprintf(b, sizeof(b), "%.3f", max_prob); return std::string(b);'
