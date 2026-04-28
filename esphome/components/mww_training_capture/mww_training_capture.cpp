@@ -58,8 +58,7 @@ void MwwTrainingCapture::setup() {
   // MWW is the one that starts/stops the underlying mic, our callback simply
   // piggybacks. That gives us the desirable property that we stop capturing
   // automatically whenever MWW pauses (e.g. while voice_assistant is active).
-  this->mic_source_->add_data_callback(
-      [this](const std::vector<uint8_t> &data) { this->on_audio_data_(data); });
+  this->mww_->add_audio_callback([this](const std::vector<uint8_t> &data) { this->on_audio_data_(data); });
 
   // Pre-register every non-internal model that's exposed by MWW unless the
   // user explicitly listed models in YAML. This keeps the "drop-in capture"

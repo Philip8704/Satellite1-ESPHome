@@ -10,6 +10,7 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/ring_buffer.h"
 
 #ifdef USE_OTA_STATE_LISTENER
@@ -18,6 +19,7 @@
 
 #include <freertos/event_groups.h>
 
+#include <functional>
 #include <frontend.h>
 #include <frontend_util.h>
 
@@ -76,6 +78,10 @@ class MicroWakeWord : public Component
   // Since these are pointers to the WakeWordModel objects, the voice assistant component can enable or disable them
   std::vector<WakeWordModel *> get_wake_words();
 
+  void add_audio_callback(std::function<void(const std::vector<uint8_t> &)> &&callback) {
+    this->audio_callback_.add(std::move(callback));
+  }
+
  protected:
   microphone::MicrophoneSource *microphone_source_{nullptr};
   Trigger<std::string> wake_word_detected_trigger_;
@@ -83,6 +89,7 @@ class MicroWakeWord : public Component
 
   std::weak_ptr<RingBuffer> ring_buffer_;
   std::vector<WakeWordModel *> wake_word_models_;
+  CallbackManager<void(const std::vector<uint8_t> &)> audio_callback_{};
 
 #ifdef USE_MICRO_WAKE_WORD_VAD
   std::unique_ptr<VADModel> vad_model_;
