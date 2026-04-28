@@ -247,15 +247,16 @@ void MwwTrainingCapture::finish_pending_capture_() {
     return;
   }
 
-  // Compute slice we want: [target - (pre+post) samples, target).
-  const uint64_t pre_samples = (uint64_t)(this->pre_buffer_seconds_ * this->sample_rate_);
+  // Compute slice we want: [target - (pre+post) samples, target). Keep this
+  // conservative; building a multi-second WAV in std::vector can exhaust
+  // internal heap on ESP32 builds where exceptions are disabled.
+  const uint64_t requested_pre_samples = (uint64_t)(this->pre_buffer_seconds_ * this->sample_rate_);
+  const uint64_t max_pre_samples = this->sample_rate_;  // debug-safe 1 s cap
+  const uint64_t pre_samples = std::min<uint64_t>(requested_pre_samples, max_pre_samples);
   const uint64_t post_samples = (uint64_t) this->post_buffer_ms_ * this->sample_rate_ / 1000ULL;
   const uint64_t total_slice = pre_samples + post_samples;
-  // Cap to ring capacity minus a small guard so the producer doesn't lap us.
-  const uint64_t safe_capacity = this->ring_capacity_ > (this->sample_rate_ / 10)
-                                     ? (uint64_t)(this->ring_capacity_ - this->sample_rate_ / 10)
-                                     : (uint64_t) this->ring_capacity_;
-  const uint64_t slice_len = std::min<uint64_t>(std::min<uint64_t>(total_slice, safe_capacity), this->capture_target_total_);
+  const uint64_t slice_len = std::min<uint64_t>(std::min<uint64_t>(total_slice, (uint64_t) this->ring_capacity_),
+                                               this->capture_target_total_);
   const uint64_t start_sample = this->capture_target_total_ - slice_len;
   if (start_sample > this->capture_target_total_) {
     // Underflow guard
@@ -264,6 +265,7 @@ void MwwTrainingCapture::finish_pending_capture_() {
   }
 
   std::vector<int16_t> samples;
+  samples.reserve((size_t) slice_len);
   samples.resize((size_t) slice_len, 0);
 
   // Find the ring index that corresponds to ``start_sample``. ring_head is
