@@ -10,7 +10,6 @@
 #include "esphome/core/helpers.h"
 
 #include <atomic>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -28,12 +27,10 @@ namespace mww_training_capture {
 //     buffer (pre_buffer_seconds long).
 //   * the main loop polls each registered WakeWordModel for its latest
 //     sliding-window max probability.
-//   * when (max >= near_miss_lower_cutoff) AND (max < probability_cutoff)
-//     AND (VAD active, if required) we mark a pending capture, wait
-//     post_buffer_ms more samples, then assemble a 16-bit mono 16 kHz WAV
-//     and fire the on_near_miss_detected trigger.
-//   * the YAML automation is responsible for transporting the WAV — typically
-//     an http_request.post to the companion FastAPI service.
+//   * when max >= near_miss_lower_cutoff, and MWW has not already produced a
+//     real wake-word detection, we mark a pending capture, wait post_buffer_ms
+//     more samples, copy that slice to a stable PSRAM buffer, then stream a
+//     16-bit mono WAV directly to the companion service.
 class MwwTrainingCapture : public Component {
  public:
   void setup() override;
@@ -50,6 +47,8 @@ class MwwTrainingCapture : public Component {
   void set_cooldown_ms(uint32_t ms) { this->cooldown_ms_ = ms; }
   void set_require_vad(bool require) { this->require_vad_ = require; }
   void set_initial_enabled(bool enabled) { this->enabled_ = enabled; }
+  void set_upload_url(const std::string &url) { this->upload_url_ = url; }
+  void set_device_name(const std::string &device_name) { this->device_name_ = device_name; }
 
   // Register a wake-word model that should participate in near-miss capture.
   // Without an explicit override it inherits ``default_lower_cutoff_``.
@@ -62,11 +61,6 @@ class MwwTrainingCapture : public Component {
   bool is_enabled() const { return this->enabled_; }
 
   // ------------------------- YAML accessors -------------------------------
-  // Returns the most recently captured WAV blob as a std::string (binary
-  // safe). Empty when no capture has been emitted yet. Designed to be passed
-  // straight into ``http_request.post.body``.
-  std::string get_last_capture_wav_string();
-  size_t get_last_capture_size();
   std::string get_last_wake_word();
   float get_last_max_probability();
   float get_last_average_probability();
@@ -80,7 +74,7 @@ class MwwTrainingCapture : public Component {
   // ------------------------- Polling logic --------------------------------
   void check_near_misses_();
   void finish_pending_capture_();
-  void build_wav_(const std::vector<int16_t> &samples, std::vector<uint8_t> &wav_out);
+  bool upload_wav_(const int16_t *samples, size_t sample_count);
 
   // ------------------------- Configuration --------------------------------
   micro_wake_word::MicroWakeWord *mww_{nullptr};
@@ -88,6 +82,8 @@ class MwwTrainingCapture : public Component {
 
   bool enabled_{false};
   bool require_vad_{true};
+  std::string upload_url_;
+  std::string device_name_{"unknown_device"};
   float pre_buffer_seconds_{2.0f};
   uint32_t post_buffer_ms_{500};
   uint32_t cooldown_ms_{4000};
@@ -106,6 +102,8 @@ class MwwTrainingCapture : public Component {
   // post_buffer_ms * sample_rate / 1000 + headroom.
   int16_t *ring_{nullptr};
   size_t ring_capacity_{0};
+  int16_t *capture_buffer_{nullptr};
+  size_t capture_buffer_capacity_{0};
   // Producer state — written by the audio callback only.
   std::atomic<uint64_t> total_samples_written_{0};
   std::atomic<size_t> ring_head_{0};
@@ -123,7 +121,6 @@ class MwwTrainingCapture : public Component {
   uint8_t capture_avg_prob_{0};
 
   // ------------------------- Last completed capture -----------------------
-  std::vector<uint8_t> last_capture_wav_;
   std::string last_wake_word_;
   uint8_t last_max_prob_{0};
   uint8_t last_avg_prob_{0};

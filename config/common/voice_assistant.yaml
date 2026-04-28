@@ -391,34 +391,18 @@ mww_training_capture:
   cooldown_ms: 4000
   require_vad: false
   enabled_by_default: false
+  upload_url: ${mww_capture_endpoint}
+  device_name: ${node_name}
   models:
     - wake_word_model: hey_haeris
       lower_cutoff: 0.30
   on_near_miss_detected:
-    # The trigger fires after MWW has run an inference whose max sliding-
-    # window probability lands in [lower_cutoff, real_cutoff). The component
-    # has already snapshotted the surrounding audio into a WAV blob — we just
-    # need to ship it to the companion service.
+    # The component streams the WAV directly to the companion service in C++.
+    # This automation is only a lightweight log after a successful upload.
     - logger.log:
         level: INFO
         format: "MWW near-miss for %s (max=%.2f, avg=%.2f)"
         args: [ 'wake_word.c_str()', 'max_prob', 'avg_prob' ]
-    - http_request.post:
-        url: ${mww_capture_endpoint}
-        capture_response: false
-        request_headers:
-          Content-Type: audio/wav
-          X-Wake-Word: !lambda 'return wake_word.c_str();'
-          X-Max-Probability: !lambda 'static char b[8]; snprintf(b, sizeof(b), "%.3f", max_prob); return b;'
-          X-Avg-Probability: !lambda 'static char b[8]; snprintf(b, sizeof(b), "%.3f", avg_prob); return b;'
-          X-Device-Name: ${node_name}
-          X-Sample-Rate: "16000"
-        body: !lambda 'return id(mww_capture).get_last_capture_wav_string();'
-        on_error:
-          - logger.log:
-              level: WARN
-              format: "MWW capture upload failed for '%s'"
-              args: [ 'wake_word.c_str()' ]
 
 select:
   - platform: template

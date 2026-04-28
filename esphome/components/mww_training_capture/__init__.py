@@ -6,10 +6,9 @@ probability climbs into a configurable band that's *high enough* to mean the
 user probably said something close to the wake word but *low enough* that the
 real wake word never triggered.
 
-The captured WAV blob is exposed to YAML via `get_last_capture_wav_string()`
-so it can be POSTed to a companion service (the FastAPI app under
-`tools/mww_training_capture/`) and used as additional training data for the
-microWakeWord training notebooks.
+Captured WAV data is streamed directly to a companion service (the FastAPI app
+under `tools/mww_training_capture/`) and used as additional training data for
+the microWakeWord training notebooks.
 
 Example YAML
 ------------
@@ -25,6 +24,8 @@ mww_training_capture:
   pre_buffer_seconds: 2.0
   post_buffer_ms: 500
   cooldown_ms: 4000
+  upload_url: http://homeassistant.local:8765/upload
+  device_name: satellite1
   models:
     - wake_word_model: hey_jarvis
       lower_cutoff: 0.55
@@ -43,7 +44,7 @@ import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_MICROPHONE
 
 CODEOWNERS = ["@futureproofhomes"]
-DEPENDENCIES = ["micro_wake_word", "microphone"]
+DEPENDENCIES = ["micro_wake_word", "microphone", "http_request"]
 
 CONF_MICRO_WAKE_WORD_ID = "micro_wake_word_id"
 CONF_DEFAULT_LOWER_CUTOFF = "default_lower_cutoff"
@@ -52,6 +53,8 @@ CONF_POST_BUFFER_MS = "post_buffer_ms"
 CONF_COOLDOWN_MS = "cooldown_ms"
 CONF_REQUIRE_VAD = "require_vad"
 CONF_ENABLED_BY_DEFAULT = "enabled_by_default"
+CONF_UPLOAD_URL = "upload_url"
+CONF_DEVICE_NAME = "device_name"
 CONF_MODELS = "models"
 CONF_WAKE_WORD_MODEL = "wake_word_model"
 CONF_LOWER_CUTOFF = "lower_cutoff"
@@ -120,6 +123,8 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_REQUIRE_VAD, default=True): cv.boolean,
         cv.Optional(CONF_ENABLED_BY_DEFAULT, default=False): cv.boolean,
+        cv.Required(CONF_UPLOAD_URL): cv.string_strict,
+        cv.Optional(CONF_DEVICE_NAME, default="unknown_device"): cv.string_strict,
         cv.Optional(CONF_MODELS, default=[]): cv.ensure_list(MODEL_SCHEMA),
         cv.Optional(CONF_ON_NEAR_MISS_DETECTED): automation.validate_automation(
             single=True
@@ -154,6 +159,8 @@ async def to_code(config):
     cg.add(var.set_cooldown_ms(config[CONF_COOLDOWN_MS]))
     cg.add(var.set_require_vad(config[CONF_REQUIRE_VAD]))
     cg.add(var.set_initial_enabled(config[CONF_ENABLED_BY_DEFAULT]))
+    cg.add(var.set_upload_url(config[CONF_UPLOAD_URL]))
+    cg.add(var.set_device_name(config[CONF_DEVICE_NAME]))
 
     for model_conf in config[CONF_MODELS]:
         wake_word_model = await cg.get_variable(model_conf[CONF_WAKE_WORD_MODEL])

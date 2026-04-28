@@ -5,6 +5,9 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
+#include <esp_err.h>
+#include <esp_http_client.h>
+
 #include <algorithm>
 #include <cstring>
 
@@ -12,11 +15,6 @@ namespace esphome {
 namespace mww_training_capture {
 
 static const char *const TAG = "mww_training_capture";
-
-// Maximum sliding-window quantised probability we keep watching for. Anything
-// above this is the real wake-word — we *want* MWW to trigger on those, not
-// us, so capping the band keeps us out of MWW's way.
-static constexpr uint8_t NEAR_MISS_UPPER_HEADROOM = 4;  // ~0.016 in float
 
 void MwwTrainingCapture::setup() {
   if (this->mww_ == nullptr) {
@@ -43,6 +41,12 @@ void MwwTrainingCapture::setup() {
   if (this->ring_capacity_ < this->sample_rate_) {
     this->ring_capacity_ = this->sample_rate_;  // hard floor of 1 s
   }
+  const uint64_t configured_capture_samples =
+      (uint64_t)(this->pre_buffer_seconds_ * this->sample_rate_) +
+      ((uint64_t) this->post_buffer_ms_ * this->sample_rate_ / 1000ULL);
+  this->capture_buffer_capacity_ = (size_t) std::min<uint64_t>(
+      std::max<uint64_t>(configured_capture_samples, 1), (uint64_t) this->ring_capacity_);
+
   RAMAllocator<int16_t> alloc;
   this->ring_ = alloc.allocate(this->ring_capacity_);
   if (this->ring_ == nullptr) {
@@ -51,6 +55,12 @@ void MwwTrainingCapture::setup() {
     return;
   }
   std::memset(this->ring_, 0, this->ring_capacity_ * sizeof(int16_t));
+  this->capture_buffer_ = alloc.allocate(this->capture_buffer_capacity_);
+  if (this->capture_buffer_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to allocate %u-sample capture buffer", (unsigned) this->capture_buffer_capacity_);
+    this->mark_failed();
+    return;
+  }
   this->ring_initialised_ = true;
 
   // Subscribe to the same microphone source as MWW. ESPHome's MicrophoneSource
@@ -71,8 +81,9 @@ void MwwTrainingCapture::setup() {
     }
   }
 
-  ESP_LOGI(TAG, "Training capture ready (ring=%u samples / %.1f s, models=%u, enabled=%s)",
-           (unsigned) this->ring_capacity_, total_seconds, (unsigned) this->models_.size(),
+  ESP_LOGI(TAG, "Training capture ready (ring=%u samples / %.1f s, capture=%u samples, models=%u, enabled=%s)",
+           (unsigned) this->ring_capacity_, total_seconds, (unsigned) this->capture_buffer_capacity_,
+           (unsigned) this->models_.size(),
            this->enabled_ ? "yes" : "no");
 }
 
@@ -82,6 +93,7 @@ void MwwTrainingCapture::dump_config() {
   ESP_LOGCONFIG(TAG, "  Post-buffer: %u ms", (unsigned) this->post_buffer_ms_);
   ESP_LOGCONFIG(TAG, "  Cooldown: %u ms", (unsigned) this->cooldown_ms_);
   ESP_LOGCONFIG(TAG, "  Require VAD: %s", this->require_vad_ ? "yes" : "no");
+  ESP_LOGCONFIG(TAG, "  Upload URL: %s", this->upload_url_.c_str());
   ESP_LOGCONFIG(TAG, "  Default lower cutoff: %.2f", this->default_lower_cutoff_ / 255.0f);
   ESP_LOGCONFIG(TAG, "  Models registered: %u", (unsigned) this->models_.size());
   for (auto &m : this->models_) {
@@ -192,14 +204,11 @@ void MwwTrainingCapture::check_near_misses_() {
     const uint8_t max_prob = entry.model->get_last_max_probability();
     const uint8_t avg_prob = entry.model->get_last_average_probability();
     const uint8_t real_cutoff = entry.model->get_probability_cutoff();
-    const uint8_t upper_bound =
-        real_cutoff > NEAR_MISS_UPPER_HEADROOM ? (uint8_t)(real_cutoff - NEAR_MISS_UPPER_HEADROOM) : real_cutoff;
-
-    // Near-miss band: [lower_cutoff, real_cutoff). Both checks defensive — if
-    // the user accidentally set lower_cutoff >= real_cutoff we silently no-op.
+    // Near-miss band: [lower_cutoff, real_cutoff). If VAD is inactive, also
+    // keep scores above the real cutoff because MWW itself will not fire.
     if (max_prob < entry.lower_cutoff)
       continue;
-    if (max_prob >= upper_bound && vad_active)
+    if (max_prob >= real_cutoff && vad_active)
       continue;
 
     // Stage a capture. We pin the "end" sample index to where the producer
@@ -247,12 +256,15 @@ void MwwTrainingCapture::finish_pending_capture_() {
     return;
   }
 
-  // Compute slice we want: [target - (pre+post) samples, target). Keep this
-  // conservative; building a multi-second WAV in std::vector can exhaust
-  // internal heap on ESP32 builds where exceptions are disabled.
-  const uint64_t total_slice = std::min<uint64_t>(this->sample_rate_ / 2, 8000);  // debug-safe 0.5 s cap
+  // Compute slice we want: [target - (pre+post) samples, target). We copy the
+  // slice into a persistent PSRAM buffer before upload so Wi-Fi latency cannot
+  // race the live audio ring and corrupt the beginning of the capture.
+  const uint64_t pre_samples = (uint64_t)(this->pre_buffer_seconds_ * this->sample_rate_);
+  const uint64_t post_samples = (uint64_t) this->post_buffer_ms_ * this->sample_rate_ / 1000ULL;
+  const uint64_t total_slice = pre_samples + post_samples;
   const uint64_t slice_len = std::min<uint64_t>(std::min<uint64_t>(total_slice, (uint64_t) this->ring_capacity_),
-                                               this->capture_target_total_);
+                                               std::min<uint64_t>((uint64_t) this->capture_buffer_capacity_,
+                                                                  this->capture_target_total_));
   const uint64_t start_sample = this->capture_target_total_ - slice_len;
   if (start_sample > this->capture_target_total_) {
     // Underflow guard
@@ -274,89 +286,110 @@ void MwwTrainingCapture::finish_pending_capture_() {
   }
   size_t start_idx = (head + this->ring_capacity_ - (size_t) back_off) % this->ring_capacity_;
 
-  // Build the WAV blob.
-  this->last_capture_wav_.clear();
-  this->last_capture_wav_.reserve(44 + (size_t) slice_len * sizeof(int16_t));
-  const uint32_t data_bytes = (uint32_t)(slice_len * sizeof(int16_t));
-  const uint32_t riff_size = 36 + data_bytes;
-  const uint16_t channels = 1;
-  const uint16_t bits_per_sample = 16;
-  const uint16_t block_align = channels * (bits_per_sample / 8);
-  const uint32_t byte_rate = this->sample_rate_ * block_align;
-  auto push32 = [this](uint32_t v) {
-    this->last_capture_wav_.push_back((uint8_t)(v & 0xFF));
-    this->last_capture_wav_.push_back((uint8_t)((v >> 8) & 0xFF));
-    this->last_capture_wav_.push_back((uint8_t)((v >> 16) & 0xFF));
-    this->last_capture_wav_.push_back((uint8_t)((v >> 24) & 0xFF));
-  };
-  auto push16 = [this](uint16_t v) {
-    this->last_capture_wav_.push_back((uint8_t)(v & 0xFF));
-    this->last_capture_wav_.push_back((uint8_t)((v >> 8) & 0xFF));
-  };
-  auto push_str = [this](const char *s) {
-    for (; *s != '\0'; ++s) {
-      this->last_capture_wav_.push_back((uint8_t) *s);
-    }
-  };
-  push_str("RIFF");
-  push32(riff_size);
-  push_str("WAVE");
-  push_str("fmt ");
-  push32(16);
-  push16(1);
-  push16(channels);
-  push32(this->sample_rate_);
-  push32(byte_rate);
-  push16(block_align);
-  push16(bits_per_sample);
-  push_str("data");
-  push32(data_bytes);
   for (size_t i = 0; i < (size_t) slice_len; ++i) {
-    const int16_t sample = this->ring_[(start_idx + i) % this->ring_capacity_];
-    push16((uint16_t) sample);
+    this->capture_buffer_[i] = this->ring_[(start_idx + i) % this->ring_capacity_];
   }
+
+  const bool uploaded = this->upload_wav_(this->capture_buffer_, (size_t) slice_len);
   this->last_wake_word_ = this->capture_wake_word_;
   this->last_max_prob_ = this->capture_max_prob_;
   this->last_avg_prob_ = this->capture_avg_prob_;
-  this->capture_count_.fetch_add(1, std::memory_order_relaxed);
+  if (uploaded) {
+    this->capture_count_.fetch_add(1, std::memory_order_relaxed);
+  }
 
-  ESP_LOGI(TAG, "Captured %.2f s near-miss for '%s' (max=%.2f, avg=%.2f, %u bytes)",
+  ESP_LOGI(TAG, "%s %.2f s near-miss for '%s' (max=%.2f, avg=%.2f)",
+           uploaded ? "Uploaded" : "Failed to upload",
            (float) slice_len / (float) this->sample_rate_, this->last_wake_word_.c_str(),
-           this->last_max_prob_ / 255.0f, this->last_avg_prob_ / 255.0f,
-           (unsigned) this->last_capture_wav_.size());
+           this->last_max_prob_ / 255.0f, this->last_avg_prob_ / 255.0f);
 
-  // Fire the trigger. YAML automation can now grab the WAV via
-  // get_last_capture_wav_string() and POST it to the companion service.
-  this->near_miss_trigger_.trigger(this->last_wake_word_, this->last_max_prob_ / 255.0f,
-                                   this->last_avg_prob_ / 255.0f);
+  if (uploaded) {
+    this->near_miss_trigger_.trigger(this->last_wake_word_, this->last_max_prob_ / 255.0f,
+                                     this->last_avg_prob_ / 255.0f);
+  }
 
   this->capture_pending_ = false;
 }
 
-void MwwTrainingCapture::build_wav_(const std::vector<int16_t> &samples, std::vector<uint8_t> &wav_out) {
-  const uint32_t data_bytes = (uint32_t)(samples.size() * sizeof(int16_t));
+bool MwwTrainingCapture::upload_wav_(const int16_t *samples, size_t sample_count) {
+  if (this->upload_url_.empty()) {
+    ESP_LOGW(TAG, "No upload_url configured; dropping capture");
+    return false;
+  }
+  if (samples == nullptr || sample_count == 0) {
+    ESP_LOGW(TAG, "Capture has no audio samples; dropping upload");
+    return false;
+  }
+
+  const uint32_t data_bytes = (uint32_t)(sample_count * sizeof(int16_t));
+  const uint32_t total_bytes = 44 + data_bytes;
   const uint32_t riff_size = 36 + data_bytes;
   const uint16_t channels = 1;
   const uint16_t bits_per_sample = 16;
   const uint16_t block_align = channels * (bits_per_sample / 8);
   const uint32_t byte_rate = this->sample_rate_ * block_align;
 
-  wav_out.clear();
-  wav_out.reserve(44 + data_bytes);
+  esp_http_client_config_t config = {};
+  config.url = this->upload_url_.c_str();
+  config.method = HTTP_METHOD_POST;
+  config.timeout_ms = 4500;
+  config.buffer_size = 512;
+  config.buffer_size_tx = 512;
 
-  auto push32 = [&wav_out](uint32_t v) {
-    wav_out.push_back((uint8_t)(v & 0xFF));
-    wav_out.push_back((uint8_t)((v >> 8) & 0xFF));
-    wav_out.push_back((uint8_t)((v >> 16) & 0xFF));
-    wav_out.push_back((uint8_t)((v >> 24) & 0xFF));
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (client == nullptr) {
+    ESP_LOGW(TAG, "Failed to initialise HTTP client for capture upload");
+    return false;
+  }
+
+  char max_probability[12];
+  char avg_probability[12];
+  char sample_rate[12];
+  snprintf(max_probability, sizeof(max_probability), "%.3f", this->capture_max_prob_ / 255.0f);
+  snprintf(avg_probability, sizeof(avg_probability), "%.3f", this->capture_avg_prob_ / 255.0f);
+  snprintf(sample_rate, sizeof(sample_rate), "%u", (unsigned) this->sample_rate_);
+
+  esp_http_client_set_header(client, "Content-Type", "audio/wav");
+  esp_http_client_set_header(client, "X-Wake-Word", this->capture_wake_word_.c_str());
+  esp_http_client_set_header(client, "X-Max-Probability", max_probability);
+  esp_http_client_set_header(client, "X-Avg-Probability", avg_probability);
+  esp_http_client_set_header(client, "X-Device-Name", this->device_name_.c_str());
+  esp_http_client_set_header(client, "X-Sample-Rate", sample_rate);
+
+  esp_err_t err = esp_http_client_open(client, total_bytes);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to open capture upload to %s: %s", this->upload_url_.c_str(), esp_err_to_name(err));
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  auto write_all = [client](const uint8_t *data, int len) -> bool {
+    int offset = 0;
+    while (offset < len) {
+      int written = esp_http_client_write(client, reinterpret_cast<const char *>(data + offset), len - offset);
+      if (written <= 0) {
+        return false;
+      }
+      offset += written;
+    }
+    return true;
   };
-  auto push16 = [&wav_out](uint16_t v) {
-    wav_out.push_back((uint8_t)(v & 0xFF));
-    wav_out.push_back((uint8_t)((v >> 8) & 0xFF));
+
+  uint8_t wav_header[44];
+  size_t header_pos = 0;
+  auto push32 = [&wav_header, &header_pos](uint32_t v) {
+    wav_header[header_pos++] = (uint8_t)(v & 0xFF);
+    wav_header[header_pos++] = (uint8_t)((v >> 8) & 0xFF);
+    wav_header[header_pos++] = (uint8_t)((v >> 16) & 0xFF);
+    wav_header[header_pos++] = (uint8_t)((v >> 24) & 0xFF);
   };
-  auto push_str = [&wav_out](const char *s) {
+  auto push16 = [&wav_header, &header_pos](uint16_t v) {
+    wav_header[header_pos++] = (uint8_t)(v & 0xFF);
+    wav_header[header_pos++] = (uint8_t)((v >> 8) & 0xFF);
+  };
+  auto push_str = [&wav_header, &header_pos](const char *s) {
     for (; *s != '\0'; ++s) {
-      wav_out.push_back((uint8_t) *s);
+      wav_header[header_pos++] = (uint8_t) *s;
     }
   };
 
@@ -374,16 +407,47 @@ void MwwTrainingCapture::build_wav_(const std::vector<int16_t> &samples, std::ve
   push_str("data");
   push32(data_bytes);
 
-  // Append PCM samples little-endian.
-  const uint8_t *raw = reinterpret_cast<const uint8_t *>(samples.data());
-  wav_out.insert(wav_out.end(), raw, raw + data_bytes);
+  bool ok = write_all(wav_header, sizeof(wav_header));
+  uint8_t chunk[512];
+  size_t sample_offset = 0;
+  while (ok && sample_offset < sample_count) {
+    const size_t samples_this_chunk =
+        std::min<size_t>(sizeof(chunk) / sizeof(int16_t), sample_count - sample_offset);
+    for (size_t i = 0; i < samples_this_chunk; ++i) {
+      const int16_t sample = samples[sample_offset + i];
+      chunk[i * 2] = (uint8_t)(((uint16_t) sample) & 0xFF);
+      chunk[i * 2 + 1] = (uint8_t)((((uint16_t) sample) >> 8) & 0xFF);
+    }
+    ok = write_all(chunk, (int) (samples_this_chunk * sizeof(int16_t)));
+    sample_offset += samples_this_chunk;
+  }
+
+  int status = 0;
+  if (ok) {
+    int header_length = esp_http_client_fetch_headers(client);
+    status = esp_http_client_get_status_code(client);
+    if (header_length < 0) {
+      ESP_LOGW(TAG, "Capture upload failed while reading response headers");
+      ok = false;
+    }
+  } else {
+    ESP_LOGW(TAG, "Capture upload failed while writing request body");
+  }
+
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+
+  if (!ok) {
+    return false;
+  }
+  if (status < 200 || status >= 300) {
+    ESP_LOGW(TAG, "Capture upload returned HTTP %d", status);
+    return false;
+  }
+  ESP_LOGD(TAG, "Capture upload returned HTTP %d (%u bytes)", status, (unsigned) total_bytes);
+  return true;
 }
 
-std::string MwwTrainingCapture::get_last_capture_wav_string() {
-  return std::string(reinterpret_cast<const char *>(this->last_capture_wav_.data()),
-                     this->last_capture_wav_.size());
-}
-size_t MwwTrainingCapture::get_last_capture_size() { return this->last_capture_wav_.size(); }
 std::string MwwTrainingCapture::get_last_wake_word() { return this->last_wake_word_; }
 float MwwTrainingCapture::get_last_max_probability() { return this->last_max_prob_ / 255.0f; }
 float MwwTrainingCapture::get_last_average_probability() { return this->last_avg_prob_ / 255.0f; }
