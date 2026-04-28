@@ -17,6 +17,7 @@ RUN apk add --no-cache python3 py3-pip \
 WORKDIR /opt/mww
 COPY service /opt/mww/service
 COPY run.sh /run.sh
-RUN chmod +x /run.sh
+RUN sed -i 's/\r$//' /run.sh \
+ && chmod +x /run.sh
 
 CMD [ "/run.sh" ]
