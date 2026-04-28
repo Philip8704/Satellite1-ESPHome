@@ -1,4 +1,13 @@
 substitutions:
+  # ----------------------------------------------------------------------
+  # MWW Training Capture defaults
+  # ----------------------------------------------------------------------
+  # URL of the companion FastAPI service that ingests near-miss WAVs. See
+  # tools/mww_training_capture/ for the service implementation. Override in
+  # your top-level YAML (or `secrets:` block) if the service runs on a
+  # different host or port.
+  mww_capture_endpoint: http://homeassistant.local:8765/upload
+
   # Phases of the Voice Assistant
   # The voice assistant is ready to be triggered by a wake word
   voice_assist_idle_phase_id: '1'
@@ -358,6 +367,60 @@ script:
                   switch.is_off: timer_ringing
                 then:
                   - micro_wake_word.disable_model: stop
+
+# ----------------------------------------------------------------------------
+# MWW Training Capture
+# ----------------------------------------------------------------------------
+# Records short WAVs whenever microWakeWord produces a "near-miss": a sliding-
+# window probability that climbed into a configurable band but never crossed
+# the real cutoff. These are the false-negative samples we want for retraining.
+#
+# Capture is gated by the `training_capture_switch` below and the upload
+# endpoint is the `mww_capture_endpoint` substitution at the top of this file.
+# Configure both via Home Assistant (the switch) and your top-level YAML (the
+# substitution).
+mww_training_capture:
+  id: mww_capture
+  micro_wake_word_id: mww
+  microphone:
+    microphone: sat1_mics
+    channels: 1
+  default_lower_cutoff: 0.40
+  pre_buffer_seconds: 2.0
+  post_buffer_ms: 500
+  cooldown_ms: 4000
+  require_vad: true
+  enabled_by_default: false
+  models:
+    - wake_word_model: hey_jarvis
+      lower_cutoff: 0.55     # hey_jarvis sits high, so the band starts high
+    - wake_word_model: okay_nabu
+      lower_cutoff: 0.40
+  on_near_miss_detected:
+    # The trigger fires after MWW has run an inference whose max sliding-
+    # window probability lands in [lower_cutoff, real_cutoff). The component
+    # has already snapshotted the surrounding audio into a WAV blob — we just
+    # need to ship it to the companion service.
+    - logger.log:
+        level: INFO
+        format: "MWW near-miss for %s (max=%.2f, avg=%.2f)"
+        args: [ 'wake_word.c_str()', 'max_prob', 'avg_prob' ]
+    - http_request.post:
+        url: ${mww_capture_endpoint}
+        capture_response: false
+        headers:
+          Content-Type: audio/wav
+          X-Wake-Word: !lambda 'return wake_word;'
+          X-Max-Probability: !lambda 'char b[8]; snprintf(b, sizeof(b), "%.3f", max_prob); return std::string(b);'
+          X-Avg-Probability: !lambda 'char b[8]; snprintf(b, sizeof(b), "%.3f", avg_prob); return std::string(b);'
+          X-Device-Name: ${node_name}
+          X-Sample-Rate: "16000"
+        body: !lambda 'return id(mww_capture).get_last_capture_wav_string();'
+        on_error:
+          - logger.log:
+              level: WARN
+              format: "MWW capture upload failed for '%s'"
+              args: [ 'wake_word.c_str()' ]
 
 select:
   - platform: template

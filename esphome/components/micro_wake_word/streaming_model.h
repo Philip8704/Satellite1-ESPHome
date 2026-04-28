@@ -6,6 +6,8 @@
 
 #include "esphome/core/preferences.h"
 
+#include <atomic>
+
 #include <tensorflow/lite/core/c/common.h>
 #include <tensorflow/lite/micro/micro_interpreter.h>
 #include <tensorflow/lite/micro/micro_mutable_op_resolver.h>
@@ -59,6 +61,15 @@ class StreamingModel {
   uint8_t get_probability_cutoff() const { return this->probability_cutoff_; }
   void set_probability_cutoff(uint8_t probability_cutoff) { this->probability_cutoff_ = probability_cutoff; }
 
+  // The maximum probability observed in the most recently completed sliding window.
+  // Written from the inference task in determine_detected(), read from the main loop or
+  // sibling components. Kept as an atomic uint8 so the cross-thread access is well defined
+  // without taking a mutex on the audio hot path.
+  uint8_t get_last_max_probability() const { return this->last_max_probability_.load(std::memory_order_relaxed); }
+  uint8_t get_last_average_probability() const {
+    return this->last_average_probability_.load(std::memory_order_relaxed);
+  }
+
  protected:
   /// @brief Allocates tensor and variable arenas and sets up the model interpreter
   /// @return True if successful, false otherwise
@@ -77,6 +88,12 @@ class StreamingModel {
   uint8_t default_probability_cutoff_;
   uint8_t probability_cutoff_;
   size_t sliding_window_size_;
+
+  // Latest sliding-window probabilities, updated each time determine_detected() finishes.
+  // Read by sibling components (e.g. mww_training_capture) without locking — atomic loads
+  // give us a coherent snapshot without affecting the inference task.
+  std::atomic<uint8_t> last_max_probability_{0};
+  std::atomic<uint8_t> last_average_probability_{0};
 
   size_t last_n_index_{0};
   size_t tensor_arena_size_;

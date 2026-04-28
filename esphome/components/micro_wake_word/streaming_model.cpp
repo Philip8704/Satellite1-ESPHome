@@ -216,6 +216,10 @@ DetectionEvent WakeWordModel::determine_detected() {
 
   if ((this->ignore_windows_ < 0) || !this->enabled_) {
     detection_event.detected = false;
+    // Always publish the latest snapshot so sibling components see the cool-off
+    // window as "no signal" instead of stale data.
+    this->last_max_probability_.store(0, std::memory_order_relaxed);
+    this->last_average_probability_.store(0, std::memory_order_relaxed);
     return detection_event;
   }
 
@@ -227,6 +231,11 @@ DetectionEvent WakeWordModel::determine_detected() {
 
   detection_event.average_probability = sum / this->sliding_window_size_;
   detection_event.detected = sum > this->probability_cutoff_ * this->sliding_window_size_;
+
+  // Publish the freshly computed snapshot so the training-capture component (and any
+  // future sibling) can poll without taking locks on the inference hot path.
+  this->last_max_probability_.store(detection_event.max_probability, std::memory_order_relaxed);
+  this->last_average_probability_.store(detection_event.average_probability, std::memory_order_relaxed);
 
   this->unprocessed_probability_status_ = false;
   return detection_event;

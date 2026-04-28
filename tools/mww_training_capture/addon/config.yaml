@@ -1,0 +1,32 @@
+# Home Assistant add-on manifest for the mww_training_capture service.
+# Drop the parent folder into /addons/ on a Supervised HA install (or via
+# the Local Add-ons mechanism) and the add-on will appear in the store.
+name: "MWW Training Capture"
+version: "1.0.0"
+slug: mww_training_capture
+description: >-
+  Receives near-miss wake-word audio captures from the FutureProofHomes
+  Satellite 1 firmware and exposes a small UI for labeling them as training
+  data.
+url: "https://github.com/FutureProofHomes/Satellite1-ESPHome"
+arch:
+  - aarch64
+  - amd64
+  - armv7
+init: false
+boot: auto
+ports:
+  "8765/tcp": 8765
+ports_description:
+  "8765/tcp": "HTTP endpoint that the Sat1 firmware POSTs near-miss WAVs to"
+map:
+  - share:rw
+options:
+  data_subpath: "mww_captures"
+  log_level: "info"
+schema:
+  data_subpath: str
+  log_level: list(trace|debug|info|notice|warning|error|fatal)
+# NOTE: no `image:` line on purpose. With it, Supervisor tries to pull a
+# pre-built image from a registry; without it, Supervisor builds the add-on
+# locally from the Dockerfile in this folder.

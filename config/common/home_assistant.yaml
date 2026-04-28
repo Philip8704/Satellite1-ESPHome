@@ -39,6 +39,22 @@ button:
     internal: true
 
 switch:
+  # MWW Training Capture master switch. When ON, the firmware records short
+  # WAVs of any near-miss wake-word activations and POSTs them to the
+  # companion service for use as training data. OFF by default so the
+  # firmware ships in a "no extra outbound traffic" mode.
+  - platform: template
+    id: training_capture_switch
+    name: "Wake word training capture"
+    icon: "mdi:record-rec"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - mww_training_capture.enable: mww_capture
+    turn_off_action:
+      - mww_training_capture.disable: mww_capture
+
   # Wake Word Sound Switch.
   - platform: template
     id: wake_sound
@@ -78,6 +94,20 @@ switch:
       - script.execute: control_leds
     on_turn_off:
       - script.execute: control_leds
+
+sensor:
+  # Cumulative count of near-miss captures emitted since boot. Useful for
+  # spotting silent failures (e.g. the upload endpoint is unreachable) — if
+  # the switch is on but this counter never moves, training capture is dead.
+  - platform: template
+    id: mww_capture_counter
+    name: "Wake word captures since boot"
+    icon: "mdi:counter"
+    entity_category: diagnostic
+    unit_of_measurement: ""
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: 'return (float) id(mww_capture).get_capture_count();'
 
 text_sensor:
   - platform: template
