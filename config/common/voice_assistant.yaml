@@ -410,9 +410,9 @@ mww_training_capture:
         capture_response: false
         request_headers:
           Content-Type: audio/wav
-          X-Wake-Word: !lambda 'return wake_word;'
-          X-Max-Probability: !lambda 'char b[8]; snprintf(b, sizeof(b), "%.3f", max_prob); return std::string(b);'
-          X-Avg-Probability: !lambda 'char b[8]; snprintf(b, sizeof(b), "%.3f", avg_prob); return std::string(b);'
+          X-Wake-Word: !lambda 'return wake_word.c_str();'
+          X-Max-Probability: !lambda 'static char b[8]; snprintf(b, sizeof(b), "%.3f", max_prob); return b;'
+          X-Avg-Probability: !lambda 'static char b[8]; snprintf(b, sizeof(b), "%.3f", avg_prob); return b;'
           X-Device-Name: ${node_name}
           X-Sample-Rate: "16000"
         body: !lambda 'return id(mww_capture).get_last_capture_wav_string();'
