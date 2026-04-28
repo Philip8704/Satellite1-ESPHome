@@ -44,11 +44,45 @@ description: >-
     - media_player: a specific MA player entity — only when the user
       names a specific speaker by name.
 
-  Targeting rules:
-    - If the user names a room, set area.
-    - If the user names a specific speaker, set media_player.
-    - If the user says nothing about WHERE, leave both empty — the
-      script will play in the room of the device that heard the request.
+  Targeting rules (READ THIS — wrong targeting is the most common failure):
+    Voice requests always come from a Home Assistant Satellite1 device
+    that has an HA area assigned (e.g. "office", "bedroom"). That area
+    is part of your voice context — you know which room the user is
+    speaking from.
+
+    ALWAYS fill `area`. The default value is the calling Satellite1's
+    area — i.e. the room you are currently in. Pass that area into
+    `area` for every request, UNLESS the user explicitly names a
+    different room ("in the kitchen", "in the bedroom", "in the
+    office", "downstairs", "upstairs"), in which case use that named
+    room instead.
+
+    The artist, track, album, playlist, or station name is NEVER a
+    room. Do not copy media metadata into `area`.
+
+    Set `media_player` ONLY when the user explicitly names a specific
+    speaker entity, e.g. "on the Sonos Beam", "on the kitchen Sonos".
+    Otherwise leave `media_player` empty. The artist's name is never
+    a media_player.
+
+    Resolution order at runtime (defensive — the script validates and
+    falls back if your `area` value is bogus or missing):
+      1. Validated `area` from the LLM (the script discards values
+         that do not match any real HA area).
+      2. Validated `media_player` from the LLM (must be an MA media
+         player entity).
+      3. The calling Satellite1's own area — used automatically when
+         `area` is empty or invalid AND no media_player was given.
+    If none of the three resolve, the script stops with a spoken
+    "tell me which room" reply instead of playing.
+
+    Examples (assume the user is speaking from the "office"):
+      - "Play Bohemian Rhapsody by Queen"          -> area: ["office"], media_player: empty
+      - "Shuffle Daft Punk"                        -> area: ["office"], media_player: empty
+      - "Play Hotel California by the Eagles in the bedroom"
+                                                   -> area: ["bedroom"], media_player: empty
+      - "Put on jazz on the Sonos Beam"            -> area: empty, media_player: ["media_player.sonos_beam"]
+      - "Play Adele"                               -> area: ["office"], media_player: empty
 
   How to pick media_type:
     - "play Bohemian Rhapsody" -> track, media_id "Bohemian Rhapsody",
@@ -59,8 +93,20 @@ description: >-
     - "play my workout playlist" -> playlist, media_id "workout".
     - "play BBC Radio 1" -> radio, media_id "BBC Radio 1".
     - "play house music" / "put on some lofi" / "play 90s rock" ->
-      genre, media_id is the genre word(s). The script will keep
-      adding similar tracks indefinitely.
+      genre. See the genre rule below for media_id.
+
+  IMPORTANT — genre media_id rule:
+    For media_type: genre, media_id MUST be the full descriptive phrase
+    "<genre> music" (or whatever the user actually said), NEVER just the
+    bare genre word. A bare word like "house" will accidentally match
+    real tracks in the library that happen to contain that word (e.g.
+    "House of the Rising Sun") and the user gets the wrong song. Always
+    use a phrase that won't match an existing track.
+      - "play house music"     -> media_id "house music"  (NOT "house")
+      - "put on some lofi"     -> media_id "lofi music"   (NOT "lofi")
+      - "play 90s rock"        -> media_id "90s rock"     (already a phrase, fine)
+      - "play jazz"            -> media_id "jazz music"   (NOT "jazz")
+      - "play classical"       -> media_id "classical music"
 
   Multiple items: use ";" to separate (e.g. media_id "Hotel California;
   Take It Easy" with media_type track).
@@ -103,7 +149,11 @@ fields:
       - artist: artist name.
       - playlist: playlist name (drop the word "playlist" itself).
       - radio: radio channel name.
-      - genre: the genre name itself (e.g. "house", "lofi").
+      - genre: ALWAYS use the full phrase "<genre> music", never just the
+        bare genre word. A single word like "house" or "jazz" will fuzzy-
+        match real tracks (e.g. "House of the Rising Sun") and play the
+        wrong thing. Examples: "house music", "lofi music", "jazz music",
+        "90s rock", "classical music".
   artist:
     name: Artist
     selector:
@@ -135,11 +185,26 @@ fields:
           domain: media_player
         multiple: true
     description: |
-      Optional. The area(s) for which the music is requested. If the request
-      does not mention a target, omit this — the script will fall back to
-      the area of the device that received the voice command.
-      Only use both `area` and `media_player` together if both are explicitly
-      mentioned in the request.
+      ALWAYS fill this. The default value is the calling Satellite1's
+      own area — i.e. the room the user is currently speaking from,
+      which is part of your voice context. Pass that area for every
+      request UNLESS the user explicitly names a different room.
+
+      Override only when the user's words explicitly contain a different
+      room name ("in the kitchen", "in the bedroom", "in the office",
+      "downstairs", "upstairs"). The artist, track, album, playlist,
+      or station name is NEVER an area — do not copy media metadata
+      into this field.
+
+      Examples (assume the user is speaking from the "office"):
+        - "Play Bohemian Rhapsody by Queen"     -> ["office"]
+        - "Shuffle Daft Punk"                   -> ["office"]
+        - "Play Adele"                          -> ["office"]
+        - "Play jazz in the kitchen"            -> ["kitchen"]
+        - "Play Hotel California in the bedroom" -> ["bedroom"]
+
+      Only use both `area` and `media_player` together if BOTH a room
+      and a speaker name are explicitly mentioned by the user.
   media_player:
     name: Media Player
     selector:
@@ -149,10 +214,22 @@ fields:
           domain: media_player
         multiple: true
     description: |
-      Optional. Only use `media_player` if the request specifically names a
-      media player. Must be the entity_id of a Music Assistant media player.
-      Only use both `area` and `media_player` together if both are explicitly
-      mentioned in the request.
+      Optional. LEAVE EMPTY for almost every request — the calling
+      Satellite1's area is used as the target by default.
+
+      ONLY set this when the user explicitly names a specific speaker
+      ("on the Sonos Beam", "on the kitchen Sonos", "on the office
+      speakers"). Must be the entity_id of a Music Assistant media
+      player. The artist or track name is NEVER a speaker.
+
+      Examples:
+        - "Play Queen on the Sonos Beam"  -> ["media_player.sonos_beam"]
+        - "Play Queen"                    -> empty
+        - "Play Bohemian Rhapsody"        -> empty
+        - "Shuffle Muse on the office Sonos" -> ["media_player.office_sonos"]
+
+      Only use both `area` and `media_player` together if BOTH a room and
+      a speaker name are explicitly mentioned by the user.
   shuffle:
     name: Shuffle
     selector:
@@ -214,20 +291,48 @@ sequence:
         {{ device_attr(device_id, 'area_id') | default('', true)
            if (device_id is defined and device_id is string and device_id) else '' }}
 
-      # Translate enqueue_default into the value MA expects.
+      # Validate every LLM-provided area against the actual list of HA
+      # area_ids and accept human area names too. The LLM occasionally
+      # hallucinates into this field — passing the artist name, the track
+      # name, or a room that doesn't exist — which previously caused the
+      # script to "succeed" with a bogus target instead of falling back
+      # to the calling Sat1's area. Anything that doesn't resolve to a
+      # real area is dropped, so the caller_area fallback can take over.
+      resolved_areas: >-
+        {%- set ns = namespace(items=[]) -%}
+        {%- set known = areas() -%}
+        {%- for a in area | default([], true) -%}
+          {%- if a in known -%}
+            {%- set ns.items = ns.items + [a] -%}
+          {%- else -%}
+            {%- set rid = area_id(a) -%}
+            {%- if rid and rid in known and rid not in ns.items -%}
+              {%- set ns.items = ns.items + [rid] -%}
+            {%- endif -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{ ns.items }}
+
+      # Translate enqueue_default into the value MA expects. The MA queue
+      # options are: play, replace, next, replace_next, add. We default to
+      # `play` because voice "play X" calls should start audio immediately,
+      # not just rewrite the queue and wait for the current track to end.
       enqueue_mode: >-
-        {% set m = {'Replace': 'replace', 'Add to queue': 'add', 'Play next': 'play_next'} %}
-        {{ m.get(enqueue_default, 'replace') }}
+        {% set m = {'Replace': 'play', 'Add to queue': 'add', 'Play next': 'next'} %}
+        {{ m.get(enqueue_default, 'play') }}
 
       # Final target_data. Priority:
-      #   1. Explicit area from the LLM
-      #   2. Explicit media_player from the LLM
-      #   3. Caller's device area (Sat1 fallback — the ONLY fallback)
-      #   4. Stop with a helpful response
+      #   1. Validated area_id list from the LLM
+      #   2. Validated media_player list from the LLM
+      #   3. Caller Sat1's area (the default for "play X" with no room)
+      #   4. NA sentinel — stop with the spoken "tell me which room" reply
+      # The caller_area fallback wins whenever resolved_areas is empty AND
+      # player_data is empty — so a hallucinated bogus area no longer
+      # blocks the Sat1-area default from kicking in.
       target_data:
         area_id: >-
-          {% if area %}
-            {{ area }}
+          {% if resolved_areas %}
+            {{ resolved_areas }}
           {% elif not player_data and caller_area %}
             {{ [caller_area] }}
           {% else %}
@@ -244,9 +349,12 @@ sequence:
   # 2. Bail out early if there is genuinely no target.
   # ---------------------------------------------------------------------------
   - variables:
-      invalid_target: >-
-        I couldn't figure out which speaker to play that on. Try asking again
-        with the room name, like "play Queen in the bedroom".
+      # response_variable contents must be a dict, not a bare string —
+      # HA validates the tool response shape.
+      invalid_target:
+        response: >-
+          I couldn't figure out which speaker to play that on. Try asking
+          again with the room name, like "play Queen in the bedroom".
   - if:
       - condition: template
         value_template: >-
@@ -259,13 +367,60 @@ sequence:
   # 3. Build the play_media payload and the resolved target.
   # ---------------------------------------------------------------------------
   - variables:
-      # `genre` is a pseudo-type the LLM can pick. MA's play_media doesn't
-      # accept it natively, so we translate to `track` and force radio_mode
-      # so MA generates a continuous mix seeded from the genre name.
+      # Normalize the genre media_id defensively. MA's fuzzy search will
+      # happily match a bare genre word against a real track that contains
+      # that word ("house" -> "House of the Rising Sun"), so we make sure
+      # the seed phrase ends in " music" when the LLM passes a single bare
+      # word for a genre request. Multi-word phrases ("90s rock", "lofi
+      # hip hop", "house music") are passed through unchanged.
+      genre_normalized_id: >-
+        {%- if media_type == 'genre'
+              and media_id is string
+              and ';' not in media_id
+              and ' ' not in media_id | trim -%}
+          {{ media_id | trim ~ ' music' }}
+        {%- else -%}
+          {{ media_id }}
+        {%- endif -%}
+
+      # Disambiguate track and album titles by folding `artist` into
+      # media_id as "Artist - Title". MA's search ranks title hits much
+      # more heavily than the separate `artist` field, so for ambiguous
+      # titles ("Blah Blah Blah", "Hello", "Stay") the more-popular
+      # artist usually wins on a title-only match even when an artist
+      # hint is provided. Putting the artist directly into the search
+      # string gives MA a single phrase to match — and Spotify/Tidal/etc
+      # all rank "<artist> - <title>" the same way they rank a written-
+      # out search query, which is the correct one. We only do this when
+      # there's no semicolon (single item) and the LLM actually provided
+      # an artist value that isn't already embedded.
+      normalized_media_id: >-
+        {%- set base = genre_normalized_id -%}
+        {%- if media_type in ['track', 'album']
+              and artist | default('', true)
+              and base is string
+              and ';' not in base
+              and ' - ' not in base -%}
+          {{ artist | trim }} - {{ base | trim }}
+        {%- else -%}
+          {{ base }}
+        {%- endif -%}
+
+      # `genre` is a pseudo-type the LLM can pick. MA's play_media has no
+      # native genre type, and forcing media_type=track makes MA look for a
+      # *track literally named* the genre word ("House Music"), which fails
+      # silently. The fix: omit media_type entirely for genre requests so
+      # MA's fuzzy search ranges over its whole library, and force
+      # radio_mode=true so MA seeds an endless mix from whatever it finds.
+      # Final shape for "play house music in the office":
+      #   action: music_assistant.play_media
+      #   target: { area_id: office }
+      #   data:   { media_id: "house music", radio_mode: true, enqueue: play }
       action_data:
         media_id: >-
-          {{ media_id.split(';') | map('trim') | list if ';' in media_id else media_id }}
-        media_type: "{{ 'track' if media_type == 'genre' else media_type }}"
+          {{ normalized_media_id.split(';') | map('trim') | list
+             if ';' in normalized_media_id else normalized_media_id }}
+        media_type: "{{ 'NA' if media_type == 'genre' else media_type }}"
         artist: "{{ artist | default('NA', true) }}"
         album: "{{ album | default('NA', true) }}"
         radio_mode: >-
@@ -311,12 +466,14 @@ sequence:
           {%- set aids = target_data.area_id if target_data.area_id is iterable and target_data.area_id is not string else [target_data.area_id] -%}
           {{ aids | map('area_name') | reject('none') | list | join(', ') }}
         {%- endif -%}
-      reply: >-
-        {%- set what = media_description if media_description else media_id -%}
-        {%- if spoken_target -%}
-          Playing {{ what }} on {{ spoken_target }}.
-        {%- else -%}
-          Playing {{ what }}.
-        {%- endif -%}
+      # response_variable contents must be a dict, not a bare string.
+      reply:
+        response: >-
+          {%- set what = media_description if media_description else media_id -%}
+          {%- if spoken_target -%}
+            Playing {{ what }} on {{ spoken_target }}.
+          {%- else -%}
+            Playing {{ what }}.
+          {%- endif -%}
   - stop: ""
     response_variable: reply
