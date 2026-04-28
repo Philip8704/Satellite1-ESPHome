@@ -37,10 +37,13 @@ The new `mww_training_capture` ESPHome component piggybacks on the existing
    tear under the inference task's writes).
 3. When `(VAD active) AND (max ≥ lower_cutoff) AND (max < real cutoff)`, it
    marks a pending capture, waits for `post_buffer_ms` more samples to
-   arrive, then assembles a 16-bit / 16 kHz / mono WAV.
-4. Fires the `on_near_miss_detected` automation with the wake-word name and
-   probabilities; the YAML `http_request.post` ships the WAV body to the
-   companion service.
+   arrive, then copies the slice into a persistent PSRAM buffer.
+4. Streams the 16-bit / 16 kHz / mono WAV directly to `${mww_capture_endpoint}`
+   via `esp_http_client`, attaching the wake-word name, probabilities,
+   device name, and sample rate as `X-*` headers. The
+   `on_near_miss_detected` automation fires only after a successful upload,
+   and the *Wake word captures since boot* counter is incremented at the
+   same time.
 
 The companion service stores everything as plain files on disk
 (`<device>/<wake_word>/<utc>_<id>.wav` plus a JSON sidecar with the
@@ -150,13 +153,17 @@ so you can later weight or filter them however you like.
 ## Troubleshooting
 
 - **The switch is on, but the counter never moves.** Either nobody's
-  speaking near-miss audio, or the upload is failing. Check the ESPHome log
-  for `MWW capture upload failed` warnings, and the companion service for
-  `400` / connection errors.
+  speaking near-miss audio, or the upload is failing. Cross-check the
+  *Wake word captures dropped* sensor: if it climbs while the success
+  counter doesn't, the device is producing near-misses but the upload
+  itself is failing. Then check the ESPHome log for
+  `Capture upload failed`, `Failed to open capture upload`, or
+  `Capture upload returned HTTP nnn` warnings, and the companion service
+  for `400` / connection errors.
 - **Service rejects with `400 payload is not a RIFF/WAV file`.** The WAV
   builder in the firmware is busted — re-flash and check the log for the
-  `Captured X.XX s near-miss for '…'` message that should accompany every
-  upload.
+  `Uploaded X.XX s near-miss for '…'` message that should accompany every
+  successful upload.
 - **Lots of captures from background noise.** Bump
   `default_lower_cutoff` (or the per-model `lower_cutoff`) up by 0.05 — the
   band you're watching is too wide.

@@ -111,6 +111,20 @@ sensor:
     update_interval: 30s
     lambda: 'return (float) id(mww_capture).get_capture_count();'
 
+  # Companion to ``mww_capture_counter``. If this counter climbs while the
+  # success counter doesn't, the firmware is detecting near-misses but the
+  # upload itself is failing (server unreachable, 4xx, ring overrun, etc.).
+  # See the troubleshooting section of tools/mww_training_capture/README.md.
+  - platform: template
+    id: mww_capture_drops
+    name: "Wake word captures dropped"
+    icon: "mdi:cloud-off-outline"
+    entity_category: diagnostic
+    unit_of_measurement: ""
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: 'return (float) id(mww_capture).get_dropped_count();'
+
 text_sensor:
   - platform: template
     id: pd_state_text

@@ -252,6 +252,7 @@ void MwwTrainingCapture::finish_pending_capture_() {
 
   if (this->capture_target_total_ == 0) {
     ESP_LOGW(TAG, "Capture had no audio samples; dropping");
+    this->capture_drop_count_.fetch_add(1, std::memory_order_relaxed);
     this->capture_pending_ = false;
     return;
   }
@@ -268,6 +269,7 @@ void MwwTrainingCapture::finish_pending_capture_() {
   const uint64_t start_sample = this->capture_target_total_ - slice_len;
   if (start_sample > this->capture_target_total_) {
     // Underflow guard
+    this->capture_drop_count_.fetch_add(1, std::memory_order_relaxed);
     this->capture_pending_ = false;
     return;
   }
@@ -281,6 +283,7 @@ void MwwTrainingCapture::finish_pending_capture_() {
   if (back_off > (uint64_t) this->ring_capacity_) {
     // We waited too long — start point already overwritten.
     ESP_LOGW(TAG, "Capture slice was overrun before assembly; dropping");
+    this->capture_drop_count_.fetch_add(1, std::memory_order_relaxed);
     this->capture_pending_ = false;
     return;
   }
@@ -296,6 +299,8 @@ void MwwTrainingCapture::finish_pending_capture_() {
   this->last_avg_prob_ = this->capture_avg_prob_;
   if (uploaded) {
     this->capture_count_.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    this->capture_drop_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
   ESP_LOGI(TAG, "%s %.2f s near-miss for '%s' (max=%.2f, avg=%.2f)",

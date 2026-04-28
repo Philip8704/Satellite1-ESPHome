@@ -65,6 +65,7 @@ class MwwTrainingCapture : public Component {
   float get_last_max_probability();
   float get_last_average_probability();
   uint32_t get_capture_count() const { return this->capture_count_.load(std::memory_order_relaxed); }
+  uint32_t get_dropped_count() const { return this->capture_drop_count_.load(std::memory_order_relaxed); }
 
   Trigger<std::string, float, float> *get_near_miss_trigger() { return &this->near_miss_trigger_; }
 
@@ -125,6 +126,10 @@ class MwwTrainingCapture : public Component {
   uint8_t last_max_prob_{0};
   uint8_t last_avg_prob_{0};
   std::atomic<uint32_t> capture_count_{0};
+  // Counts near-misses that were detected but failed to upload (HTTP error,
+  // ring overrun, missing endpoint, etc.). Surfaced as a HA diagnostic
+  // sensor so silent upload failures don't masquerade as "no near-misses".
+  std::atomic<uint32_t> capture_drop_count_{0};
 
   Trigger<std::string, float, float> near_miss_trigger_;
 };
