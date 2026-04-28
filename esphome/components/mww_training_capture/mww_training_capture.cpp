@@ -117,6 +117,16 @@ void MwwTrainingCapture::add_model_override(micro_wake_word::WakeWordModel *mode
   this->models_.push_back({model, lower_cutoff, 0});
 }
 
+void MwwTrainingCapture::enable() {
+  this->enabled_ = true;
+  ESP_LOGI(TAG, "Training capture enabled");
+}
+
+void MwwTrainingCapture::disable() {
+  this->enabled_ = false;
+  ESP_LOGI(TAG, "Training capture disabled");
+}
+
 void MwwTrainingCapture::on_audio_data_(const std::vector<uint8_t> &data) {
   if (!this->ring_initialised_ || data.empty())
     return;

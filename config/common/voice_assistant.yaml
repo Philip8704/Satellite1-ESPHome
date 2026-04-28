@@ -389,11 +389,11 @@ mww_training_capture:
   pre_buffer_seconds: 2.0
   post_buffer_ms: 500
   cooldown_ms: 4000
-  require_vad: true
+  require_vad: false
   enabled_by_default: false
   models:
     - wake_word_model: hey_haeris
-      lower_cutoff: 0.75
+      lower_cutoff: 0.30
   on_near_miss_detected:
     # The trigger fires after MWW has run an inference whose max sliding-
     # window probability lands in [lower_cutoff, real_cutoff). The component

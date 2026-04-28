@@ -57,8 +57,8 @@ class MwwTrainingCapture : public Component {
   void add_model_override(micro_wake_word::WakeWordModel *model, uint8_t lower_cutoff);
 
   // ------------------------- Runtime control ------------------------------
-  void enable() { this->enabled_ = true; }
-  void disable() { this->enabled_ = false; }
+  void enable();
+  void disable();
   bool is_enabled() const { return this->enabled_; }
 
   // ------------------------- YAML accessors -------------------------------
