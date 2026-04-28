@@ -16,7 +16,6 @@ RUN apk add --no-cache python3 py3-pip \
 
 WORKDIR /opt/mww
 COPY service /opt/mww/service
-COPY __init__.py /opt/mww/__init__.py
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 
