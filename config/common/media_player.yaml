@@ -326,35 +326,6 @@ media_player:
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/jack_disconnected.flac
 
 script:
-  # Dedicated wake chime path. This is kept separate from generic UI sounds so
-  # a wake event always sends exactly the Satellite wake chime to Music
-  # Assistant, with MA's own pre-announce sound forced off.
-  - id: play_wake_sound
-    mode: restart
-    then:
-      - if:
-          condition:
-            switch.is_on: external_assist_speaker_switch
-          then:
-            - dac_proxy.activate_line_out:
-            - if:
-                condition:
-                  lambda: |-
-                    const auto option = id(external_assist_media_player_select).current_option();
-                    return !option.empty() && option != "None";
-                then:
-                  - homeassistant.action:
-                      action: music_assistant.play_announcement
-                      data:
-                        entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                        url: "${external_sound_base}/wake_word_triggered.flac"
-          else:
-            - script.execute:
-                id: play_sound
-                priority: true
-                sound_file: !lambda return id(wake_word_triggered_sound);
-                sound_file_url: "${external_sound_base}/wake_word_triggered.flac"
-
   # Script executed when we want to play sounds on the device.
   - id: play_sound
     parameters:

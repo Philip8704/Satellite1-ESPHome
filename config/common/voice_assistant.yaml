@@ -97,22 +97,24 @@ micro_wake_word:
                           then:
                             - media_player.stop:
                                 announcement: true
-                          # Start the voice assistant and play the wake chime
-                          # (audible feedback that the device is listening).
-                          # The chime uses a dedicated MA announcement path in
-                          # external mode so the only chime is the Satellite
-                          # wake sound; MA pre-announce is forced off.
+                          # Start the voice assistant. In external-speaker
+                          # mode we intentionally skip the Satellite wake FLAC
+                          # and let Music Assistant's announcement cue on the
+                          # upcoming TTS be the external audible cue. That
+                          # avoids a separate URL fetch before Assist starts.
                           else:
                             - if:
                                 condition:
-                                  switch.is_on: wake_sound
+                                  and:
+                                    - switch.is_on: wake_sound
+                                    - switch.is_off: external_assist_speaker_switch
                                 then:
-                                  - script.execute: play_wake_sound
-                                  - if:
-                                      condition:
-                                        switch.is_off: external_assist_speaker_switch
-                                      then:
-                                        - delay: 300ms
+                                  - script.execute:
+                                      id: play_sound
+                                      priority: true
+                                      sound_file: !lambda return id(wake_word_triggered_sound);
+                                      sound_file_url: "${external_sound_base}/wake_word_triggered.flac"
+                                  - delay: 300ms
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
 
@@ -215,6 +217,8 @@ voice_assistant:
                           data:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
                             url: !lambda 'return x;'
+                          data_template:
+                            use_pre_announce: "{{ true }}"
                       - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
@@ -287,6 +291,8 @@ voice_assistant:
               data:
                 entity_id: !lambda return id(external_assist_media_player_select).current_option();
                 url: !lambda 'return x;'
+              data_template:
+                use_pre_announce: "{{ true }}"
           - lambda: id(external_tts_forwarded) = true;
   # When the voice assistant ends ...
   on_end:
