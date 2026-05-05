@@ -101,11 +101,10 @@ micro_wake_word:
                           # (audible feedback that the device is listening).
                           # The chime is forwarded to the external HA media
                           # player via the play_sound script when external
-                          # mode is on, or played locally otherwise. We only
-                          # block on the 300ms post-chime delay for local
-                          # playback - in external mode that delay does not
-                          # synchronise with anything (Sonos is playing the
-                          # chime over the network) and just delays the mic.
+                          # mode is on, or played locally otherwise. Only local
+                          # playback blocks for the historical 300ms guard
+                          # delay; external mode starts Assist immediately for
+                          # lowest latency.
                           else:
                             - if:
                                 condition:
