@@ -7,11 +7,14 @@ substitutions:
   log_level: debug
   # OPTIONALLY, pick which HA TTS entity should be used when External Assist Speaker is ON.
   # ha_tts_entity_id: tts.edge_tts
-  # OPTIONALLY, customize selectable external media players shown in the ESPHome UI.
-  # external_assist_media_player_1: media_player.philip
-  # external_assist_media_player_2: media_player.kitchen
-  # external_assist_media_player_3: media_player.office
-  # external_assist_media_player_4: None
+
+# OPTIONALLY, add external HA media players to the ESPHome UI select.
+# select:
+#   - id: external_assist_media_player_select
+#     options: !extend
+#       - !remove "None"
+#       - media_player.living_room
+#       - media_player.kitchen
 
 esphome:
   name: ${name}

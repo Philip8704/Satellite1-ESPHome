@@ -50,20 +50,17 @@ select:
 
   # External Assist Media Player select.
   #
-  # The list of selectable speakers is intentionally minimal here ("None"
-  # only). End users add their own external speakers from the per-device
-  # install YAML using ESPHome's `!extend` mechanism — see
-  # `satellite1.example_install.yaml` for a worked example. This avoids
-  # forcing every install to declare exactly 4 speakers (the previous
-  # design used `${external_assist_media_player_1}` through `_4`) and
-  # supports any number of external speakers from 0 to N without forking
-  # this file.
+  # The base firmware keeps a "None" fallback so the firmware still builds
+  # without per-device speakers. When adding real speakers via ESPHome's
+  # `!extend` mechanism, remove that fallback so the UI only shows your
+  # configured media players.
   #
   # Example user override (in their per-device YAML):
   #
   #   select:
   #     - id: external_assist_media_player_select
   #       options: !extend
+  #         - !remove "None"
   #         - "media_player.living_room_sonos"
   #         - "media_player.kitchen_echo"
   #
@@ -73,8 +70,8 @@ select:
   # to `homeassistant.action: media_player.play_media` as the entity_id.
   # That means each option string MUST be a valid HA media_player
   # entity_id (e.g. "media_player.living_room_sonos"), not a friendly
-  # name. The literal string "None" is the sentinel for "external
-  # speakers disabled".
+  # name. "None" is only a build-safe fallback for devices without any
+  # external speaker configured.
   - platform: template
     name: External Assist Media Player
     id: external_assist_media_player_select
@@ -343,7 +340,9 @@ script:
             - dac_proxy.activate_line_out:
             - if:
                 condition:
-                  lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
+                  lambda: |-
+                    const auto option = id(external_assist_media_player_select).current_option();
+                    return !option.empty() && option != "None";
                 then:
                   # Use announce:true so short UI sounds (wake chime, jack
                   # plug/unplug, button feedback) duck over any currently
@@ -388,7 +387,9 @@ script:
           condition:
             and:
               - switch.is_on: external_assist_speaker_switch
-              - lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
+              - lambda: |-
+                  const auto option = id(external_assist_media_player_select).current_option();
+                  return !option.empty() && option != "None";
           then:
             - if:
                 condition:

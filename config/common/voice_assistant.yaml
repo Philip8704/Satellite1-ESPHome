@@ -215,7 +215,9 @@ voice_assistant:
                 # provider emits the first audio chunk.
                 - if:
                     condition:
-                      lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
+                      lambda: |-
+                        const auto option = id(external_assist_media_player_select).current_option();
+                        return !option.empty() && option != "None";
                     then:
                       - homeassistant.action:
                           action: media_player.play_media
@@ -223,7 +225,7 @@ voice_assistant:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
                             media_content_id: !lambda 'return x;'
                             media_content_type: "music"
-                            announce: "true"
+                            announce: "false"
                       - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
@@ -280,6 +282,9 @@ voice_assistant:
             - switch.is_on: external_assist_speaker_switch
             - lambda: 'return !id(external_tts_forwarded);'
             - lambda: 'return !x.empty();'
+            - lambda: |-
+                const auto option = id(external_assist_media_player_select).current_option();
+                return !option.empty() && option != "None";
         then:
           - lambda: |-
               ESP_LOGD("tts_fwd", "on_tts_end forwarding TTS URL to %s",
@@ -288,18 +293,14 @@ voice_assistant:
           - media_player.stop:
               id: external_media_player
               announcement: true
-          - if:
-              condition:
-                lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
-              then:
-                - homeassistant.action:
-                    action: media_player.play_media
-                    data:
-                      entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                      media_content_id: !lambda 'return x;'
-                      media_content_type: "music"
-                      announce: "true"
-                - lambda: id(external_tts_forwarded) = true;
+          - homeassistant.action:
+              action: media_player.play_media
+              data:
+                entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                media_content_id: !lambda 'return x;'
+                media_content_type: "music"
+                announce: "false"
+          - lambda: id(external_tts_forwarded) = true;
   # When the voice assistant ends ...
   on_end:
     - wait_until:

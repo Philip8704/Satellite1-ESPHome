@@ -161,7 +161,9 @@ binary_sensor:
                                       condition:
                                         and:
                                           - lambda: 'return id(external_tts_forwarded);'
-                                          - lambda: 'return id(external_assist_media_player_select).current_option() != "None";'
+                                          - lambda: |-
+                                              const auto option = id(external_assist_media_player_select).current_option();
+                                              return !option.empty() && option != "None";
                                       then:
                                         - homeassistant.action:
                                             action: media_player.media_stop

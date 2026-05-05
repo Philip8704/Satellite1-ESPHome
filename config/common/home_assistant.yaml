@@ -1,11 +1,6 @@
 substitutions:
   # Home Assistant TTS engine entity used when external assist speaker mode is enabled.
   ha_tts_entity_id: tts.edge_tts
-  # External media_player options shown in the ESPHome UI select.
-  external_assist_media_player_1: media_player.philip
-  external_assist_media_player_2: media_player.bedroom_2
-  external_assist_media_player_3: None
-  external_assist_media_player_4: None
   # LAN base URL HA serves chimes from. Drop the FLAC/MP3 files into
   # <HA config>/www/sounds/ and they become reachable at this base. Used only
   # when routing to an external HA media player; the internal speaker plays
