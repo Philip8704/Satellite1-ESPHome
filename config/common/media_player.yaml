@@ -348,7 +348,8 @@ script:
                       data:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
                         url: "${external_sound_base}/wake_word_triggered.flac"
-                        use_pre_announce: !lambda return false;
+                      data_template:
+                        use_pre_announce: "{{ false }}"
           else:
             - script.execute:
                 id: play_sound
@@ -383,7 +384,8 @@ script:
                       data:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
                         url: !lambda return sound_file_url;
-                        use_pre_announce: !lambda return false;
+                      data_template:
+                        use_pre_announce: "{{ false }}"
           else:
             - lambda: |-
                 if (priority) {

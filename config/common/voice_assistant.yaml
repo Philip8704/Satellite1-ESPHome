@@ -215,7 +215,8 @@ voice_assistant:
                           data:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
                             url: !lambda 'return x;'
-                            use_pre_announce: !lambda return false;
+                          data_template:
+                            use_pre_announce: "{{ false }}"
                       - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
@@ -288,7 +289,8 @@ voice_assistant:
               data:
                 entity_id: !lambda return id(external_assist_media_player_select).current_option();
                 url: !lambda 'return x;'
-                use_pre_announce: !lambda return false;
+              data_template:
+                use_pre_announce: "{{ false }}"
           - lambda: id(external_tts_forwarded) = true;
   # When the voice assistant ends ...
   on_end:
