@@ -99,22 +99,15 @@ micro_wake_word:
                                 announcement: true
                           # Start the voice assistant and play the wake chime
                           # (audible feedback that the device is listening).
-                          # The chime is forwarded to the external HA media
-                          # player via the play_sound script when external
-                          # mode is on, or played locally otherwise. Only local
-                          # playback blocks for the historical 300ms guard
-                          # delay; external mode starts Assist immediately for
-                          # lowest latency.
+                          # The chime uses a dedicated MA announcement path in
+                          # external mode so the only chime is the Satellite
+                          # wake sound; MA pre-announce is forced off.
                           else:
                             - if:
                                 condition:
                                   switch.is_on: wake_sound
                                 then:
-                                  - script.execute:
-                                      id: play_sound
-                                      priority: true
-                                      sound_file: !lambda return id(wake_word_triggered_sound);
-                                      sound_file_url: "${external_sound_base}/wake_word_triggered.flac"
+                                  - script.execute: play_wake_sound
                                   - if:
                                       condition:
                                         switch.is_off: external_assist_speaker_switch
@@ -222,7 +215,7 @@ voice_assistant:
                           data:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
                             url: !lambda 'return x;'
-                            use_pre_announce: "false"
+                            use_pre_announce: !lambda return false;
                       - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
@@ -295,7 +288,7 @@ voice_assistant:
               data:
                 entity_id: !lambda return id(external_assist_media_player_select).current_option();
                 url: !lambda 'return x;'
-                use_pre_announce: "false"
+                use_pre_announce: !lambda return false;
           - lambda: id(external_tts_forwarded) = true;
   # When the voice assistant ends ...
   on_end:
