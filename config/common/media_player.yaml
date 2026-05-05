@@ -48,6 +48,33 @@ select:
             ESP_LOGI("main", "No channel selected");
             return 0;
 
+  # External Assist Media Player select.
+  #
+  # The list of selectable speakers is intentionally minimal here ("None"
+  # only). End users add their own external speakers from the per-device
+  # install YAML using ESPHome's `!extend` mechanism — see
+  # `satellite1.example_install.yaml` for a worked example. This avoids
+  # forcing every install to declare exactly 4 speakers (the previous
+  # design used `${external_assist_media_player_1}` through `_4`) and
+  # supports any number of external speakers from 0 to N without forking
+  # this file.
+  #
+  # Example user override (in their per-device YAML):
+  #
+  #   select:
+  #     - id: external_assist_media_player_select
+  #       options: !extend
+  #         - "media_player.living_room_sonos"
+  #         - "media_player.kitchen_echo"
+  #
+  # The runtime logic in this firmware (play_sound script, control_volume
+  # script, voice_assistant on_intent_progress / on_tts_end) reads the
+  # CURRENT option of this select via `current_option()` and forwards it
+  # to `homeassistant.action: media_player.play_media` as the entity_id.
+  # That means each option string MUST be a valid HA media_player
+  # entity_id (e.g. "media_player.living_room_sonos"), not a friendly
+  # name. The literal string "None" is the sentinel for "external
+  # speakers disabled".
   - platform: template
     name: External Assist Media Player
     id: external_assist_media_player_select
@@ -55,10 +82,6 @@ select:
     entity_category: config
     options:
       - "None"
-      - ${external_assist_media_player_1}
-      - ${external_assist_media_player_2}
-      - ${external_assist_media_player_3}
-      - ${external_assist_media_player_4}
     initial_option: "None"
     optimistic: true
     restore_value: true
