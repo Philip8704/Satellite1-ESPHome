@@ -9,6 +9,9 @@
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #include <atomic>
 #include <string>
 #include <vector>
@@ -75,6 +78,9 @@ class MwwTrainingCapture : public Component {
   // ------------------------- Polling logic --------------------------------
   void check_near_misses_();
   void finish_pending_capture_();
+  void finalize_upload_if_finished_();
+  void start_upload_task_(size_t sample_count);
+  static void upload_task_(void *arg);
   bool upload_wav_(const int16_t *samples, size_t sample_count);
 
   // ------------------------- Configuration --------------------------------
@@ -120,6 +126,12 @@ class MwwTrainingCapture : public Component {
   std::string capture_wake_word_;
   uint8_t capture_max_prob_{0};
   uint8_t capture_avg_prob_{0};
+  bool capture_upload_started_{false};
+  size_t capture_upload_sample_count_{0};
+  uint32_t capture_upload_started_ms_{0};
+  std::atomic<bool> capture_upload_finished_{false};
+  std::atomic<bool> capture_upload_success_{false};
+  TaskHandle_t capture_upload_task_{nullptr};
 
   // ------------------------- Last completed capture -----------------------
   std::string last_wake_word_;

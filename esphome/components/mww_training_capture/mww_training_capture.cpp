@@ -233,6 +233,11 @@ void MwwTrainingCapture::check_near_misses_() {
 }
 
 void MwwTrainingCapture::finish_pending_capture_() {
+  if (this->capture_upload_started_) {
+    this->finalize_upload_if_finished_();
+    return;
+  }
+
   const uint64_t total_written = this->total_samples_written_.load(std::memory_order_acquire);
   if (total_written < this->capture_target_total_) {
     const uint32_t now = millis();
@@ -293,7 +298,16 @@ void MwwTrainingCapture::finish_pending_capture_() {
     this->capture_buffer_[i] = this->ring_[(start_idx + i) % this->ring_capacity_];
   }
 
-  const bool uploaded = this->upload_wav_(this->capture_buffer_, (size_t) slice_len);
+  this->start_upload_task_((size_t) slice_len);
+}
+
+void MwwTrainingCapture::finalize_upload_if_finished_() {
+  if (!this->capture_upload_finished_.load(std::memory_order_acquire)) {
+    return;
+  }
+
+  const bool uploaded = this->capture_upload_success_.load(std::memory_order_relaxed);
+  const size_t sample_count = this->capture_upload_sample_count_;
   this->last_wake_word_ = this->capture_wake_word_;
   this->last_max_prob_ = this->capture_max_prob_;
   this->last_avg_prob_ = this->capture_avg_prob_;
@@ -305,7 +319,7 @@ void MwwTrainingCapture::finish_pending_capture_() {
 
   ESP_LOGI(TAG, "%s %.2f s near-miss for '%s' (max=%.2f, avg=%.2f)",
            uploaded ? "Uploaded" : "Failed to upload",
-           (float) slice_len / (float) this->sample_rate_, this->last_wake_word_.c_str(),
+           (float) sample_count / (float) this->sample_rate_, this->last_wake_word_.c_str(),
            this->last_max_prob_ / 255.0f, this->last_avg_prob_ / 255.0f);
 
   if (uploaded) {
@@ -313,7 +327,40 @@ void MwwTrainingCapture::finish_pending_capture_() {
                                      this->last_avg_prob_ / 255.0f);
   }
 
+  this->capture_upload_started_ = false;
+  this->capture_upload_finished_.store(false, std::memory_order_relaxed);
+  this->capture_upload_success_.store(false, std::memory_order_relaxed);
+  this->capture_upload_task_ = nullptr;
+  this->capture_upload_sample_count_ = 0;
+  this->capture_upload_started_ms_ = 0;
   this->capture_pending_ = false;
+}
+
+void MwwTrainingCapture::start_upload_task_(size_t sample_count) {
+  this->capture_upload_sample_count_ = sample_count;
+  this->capture_upload_success_.store(false, std::memory_order_relaxed);
+  this->capture_upload_finished_.store(false, std::memory_order_relaxed);
+  this->capture_upload_started_ = true;
+  this->capture_upload_started_ms_ = millis();
+
+  const BaseType_t result = xTaskCreate(
+      MwwTrainingCapture::upload_task_, "mww_capture_upload", 8192, this, 1, &this->capture_upload_task_);
+  if (result != pdPASS) {
+    ESP_LOGW(TAG, "Failed to start capture upload task; dropping capture");
+    this->capture_upload_success_.store(false, std::memory_order_relaxed);
+    this->capture_upload_finished_.store(true, std::memory_order_release);
+    return;
+  }
+
+  ESP_LOGD(TAG, "Capture upload task started (%u samples)", (unsigned) sample_count);
+}
+
+void MwwTrainingCapture::upload_task_(void *arg) {
+  auto *self = static_cast<MwwTrainingCapture *>(arg);
+  const bool uploaded = self->upload_wav_(self->capture_buffer_, self->capture_upload_sample_count_);
+  self->capture_upload_success_.store(uploaded, std::memory_order_relaxed);
+  self->capture_upload_finished_.store(true, std::memory_order_release);
+  vTaskDelete(nullptr);
 }
 
 bool MwwTrainingCapture::upload_wav_(const int16_t *samples, size_t sample_count) {
