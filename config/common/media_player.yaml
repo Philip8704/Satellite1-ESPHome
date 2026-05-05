@@ -67,7 +67,7 @@ select:
   # The runtime logic in this firmware (play_sound script, control_volume
   # script, voice_assistant on_intent_progress / on_tts_end) reads the
   # CURRENT option of this select via `current_option()` and forwards it
-  # to `homeassistant.action: media_player.play_media` as the entity_id.
+  # to Music Assistant's HA actions as the entity_id.
   # That means each option string MUST be a valid HA media_player
   # entity_id (e.g. "media_player.living_room_sonos"), not a friendly
   # name. "None" is only a build-safe fallback for devices without any
@@ -344,18 +344,16 @@ script:
                     const auto option = id(external_assist_media_player_select).current_option();
                     return !option.empty() && option != "None";
                 then:
-                  # Use announce:true so short UI sounds (wake chime, jack
-                  # plug/unplug, button feedback) duck over any currently
-                  # playing media on the external player instead of replacing
-                  # it. On players that don't support MEDIA_ANNOUNCE, HA falls
-                  # back to normal play_media automatically.
+                  # Use Music Assistant's announcement path so short UI sounds
+                  # (wake chime, jack plug/unplug, button feedback) duck over
+                  # MA playback instead of replacing the queue. Keep MA's
+                  # pre-announce sound off to avoid doubling the firmware chime.
                   - homeassistant.action:
-                      action: media_player.play_media
+                      action: music_assistant.play_announcement
                       data:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                        media_content_id: !lambda return sound_file_url;
-                        media_content_type: "music"
-                        announce: "true"
+                        url: !lambda return sound_file_url;
+                        use_pre_announce: "false"
           else:
             - lambda: |-
                 if (priority) {
@@ -376,7 +374,7 @@ script:
   # to line-out, no internal speaker on a ceiling-mount install) so its
   # volume slider has no audible effect. Forward volume commands directly
   # to the configured external HA media player so the buttons control the
-  # speaker the user actually hears (e.g. Sonos).
+  # speaker the user actually hears (for example, a Music Assistant player).
   - id: control_volume
     mode: restart
     parameters:

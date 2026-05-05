@@ -208,11 +208,10 @@ voice_assistant:
                 - media_player.stop:
                     id: external_media_player
                     announcement: true
-                # Forward the streaming URL to the configured external HA media player.
-                # This bypasses tts.speak entirely and therefore avoids a second TTS
-                # generation on the HA side - the URL is the same streaming URL HA
-                # uses for the local speaker, so playback starts the moment HA's TTS
-                # provider emits the first audio chunk.
+                # Forward the streaming URL to the configured Music Assistant
+                # media_player via MA's announcement path. This bypasses tts.speak
+                # entirely and avoids a second TTS generation on the HA side - the
+                # URL is the same streaming URL HA uses for the local speaker.
                 - if:
                     condition:
                       lambda: |-
@@ -220,12 +219,11 @@ voice_assistant:
                         return !option.empty() && option != "None";
                     then:
                       - homeassistant.action:
-                          action: media_player.play_media
+                          action: music_assistant.play_announcement
                           data:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                            media_content_id: !lambda 'return x;'
-                            media_content_type: "music"
-                            announce: "false"
+                            url: !lambda 'return x;'
+                            use_pre_announce: "false"
                       - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
@@ -294,12 +292,11 @@ voice_assistant:
               id: external_media_player
               announcement: true
           - homeassistant.action:
-              action: media_player.play_media
+              action: music_assistant.play_announcement
               data:
                 entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                media_content_id: !lambda 'return x;'
-                media_content_type: "music"
-                announce: "false"
+                url: !lambda 'return x;'
+                use_pre_announce: "false"
           - lambda: id(external_tts_forwarded) = true;
   # When the voice assistant ends ...
   on_end:
