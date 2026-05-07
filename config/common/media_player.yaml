@@ -353,35 +353,23 @@ script:
                     const auto option = id(external_assist_media_player_select).current_option();
                     return !option.empty() && option != "None";
                 then:
-                  # Let the selected HA media player handle chime playback
-                  # natively in announce mode.
+                  # Let Music Assistant play external sounds from a plain URL.
+                  # Keep MA's pre-announce chime disabled.
                   - homeassistant.action:
-                      action: media_player.play_media
+                      action: music_assistant.play_announcement
                       data:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                        url: !lambda return sound_file_url;
                       data_template:
-                        announce: "{{ true }}"
-                        media: !lambda |-
-                          std::string url = sound_file_url;
-                          size_t pos = 0;
-                          while ((pos = url.find("\\", pos)) != std::string::npos) {
-                            url.replace(pos, 1, "\\\\");
-                            pos += 2;
-                          }
-                          pos = 0;
-                          while ((pos = url.find("'", pos)) != std::string::npos) {
-                            url.replace(pos, 1, "\\'");
-                            pos += 2;
-                          }
-                          return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {}} }}";
+                        use_pre_announce: "{{ false }}"
                       on_success:
                         - logger.log:
                             level: DEBUG
-                            format: "External play_media sound accepted by HA"
+                            format: "External MA sound announcement accepted by HA"
                       on_error:
                         - logger.log:
                             level: WARN
-                            format: "External play_media sound failed: %s"
+                            format: "External MA sound announcement failed: %s"
                             args: ['error.c_str()']
           else:
             - lambda: |-
