@@ -21,7 +21,7 @@ jobs:
       esphome-version: 2026.3.3
       release-summary: develop-branch
       release-url:
-      release-version:
+      release-version: 1.1.0
 
 
   create_artifact_matrix:
