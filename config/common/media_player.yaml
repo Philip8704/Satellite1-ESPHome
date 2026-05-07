@@ -323,7 +323,8 @@ script:
                     const auto option = id(external_assist_media_player_select).current_option();
                     return !option.empty() && option != "None";
                 then:
-                  # Let the selected HA media player handle announcement mode.
+                  # Let the selected HA media player handle chime playback
+                  # natively in announce mode.
                   - homeassistant.action:
                       action: media_player.play_media
                       data:
