@@ -521,7 +521,7 @@ mww_training_capture:
   device_name: ${node_name}
   models:
     - wake_word_model: hey_haeris
-      lower_cutoff: 0.30
+      lower_cutoff: 0.70
 
 select:
   - platform: template
