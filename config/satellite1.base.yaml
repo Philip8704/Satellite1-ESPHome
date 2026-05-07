@@ -70,7 +70,7 @@ ota:
     id: ota_esphome
 
 dashboard_import:
-  package_import_url: github://futureproofhomes/satellite1-esphome/config/satellite1.dashboard.yaml@staging
+  package_import_url: github://Philip8704/Satellite1-ESPHome/config/satellite1.dashboard.yaml@develop-belo
   import_full_config: true
 
 packages:

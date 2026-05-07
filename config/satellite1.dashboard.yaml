@@ -23,8 +23,8 @@ esphome:
 
 packages:
   FutureProofHomes.Satellite1:
-    url: https://github.com/futureproofhomes/satellite1-esphome
-    ref: staging  # Make sure to also change the ext_comp_repo_ref below
+    url: https://github.com/Philip8704/Satellite1-ESPHome
+    ref: develop-belo  # Make sure to also change the ext_comp_repo_ref below
     refresh: 1s
     files:
       # Main config files, don't remove
@@ -32,7 +32,7 @@ packages:
       - config/common/dashboard_build.yaml
       - path: config/common/components.external.yaml
         vars:
-          ext_comp_repo_ref: staging  # Make sure to set this to the same as the ref above
+          ext_comp_repo_ref: develop-belo  # Make sure to set this to the same as the ref above
 
       # yamllint disable rule:comments-indentation
       # OPTIONALLY, uncomment if you have the smaller LD2410 mmWave sensor connected to your HAT.

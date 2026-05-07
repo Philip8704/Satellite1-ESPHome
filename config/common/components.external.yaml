@@ -1,6 +1,6 @@
 substitutions:
   ext_comp_repo_url: https://github.com/Philip8704/Satellite1-ESPHome
-  ext_comp_repo_ref: develop
+  ext_comp_repo_ref: develop-belo
 
 external_components:
   - source:
