@@ -301,6 +301,10 @@ voice_assistant:
           # on_intent_progress fires. The early stop there can race with that
           # queued play, so stop again at TTS start when the local player has
           # actually entered the announcement path.
+          - logger.log:
+              level: WARN
+              tag: tts_fwd
+              format: "on_tts_start forcing local announcement stop for external mode"
           - media_player.stop:
               id: external_media_player
               announcement: true
@@ -308,6 +312,10 @@ voice_assistant:
           - media_player.stop:
               id: external_media_player
               announcement: true
+          - logger.log:
+              level: WARN
+              tag: tts_fwd
+              format: "on_tts_start forced local announcement stop sent twice"
     - if:
         condition:
           # The intent_progress trigger didn't start the TTS Reponse
