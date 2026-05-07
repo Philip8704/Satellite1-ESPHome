@@ -67,7 +67,7 @@ select:
   # The runtime logic in this firmware (play_sound script, control_volume
   # script, voice_assistant on_intent_progress / on_tts_end) reads the
   # CURRENT option of this select via `current_option()` and forwards it
-  # to Music Assistant's HA actions as the entity_id.
+  # to Home Assistant media_player actions as the entity_id.
   # That means each option string MUST be a valid HA media_player
   # entity_id (e.g. "media_player.living_room_sonos"), not a friendly
   # name. "None" is only a build-safe fallback for devices without any
@@ -278,27 +278,6 @@ media_player:
     on_volume:
       - script.execute: control_leds
 
-    on_announcement:
-      - mixer_speaker.apply_ducking:
-          id: media_mixing_input
-          decibel_reduction: 20
-          duration: 0.0s
-
-    on_state:
-      if:
-        condition:
-          and:
-            - switch.is_off: timer_ringing
-            - not:
-                voice_assistant.is_running:
-            - not:
-                media_player.is_announcing:
-        then:
-          - mixer_speaker.apply_ducking:
-              id: media_mixing_input
-              decibel_reduction: 0
-              duration: 1.0s
-
     files:
       - id: center_button_press_sound
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_press.flac
@@ -344,15 +323,15 @@ script:
                     const auto option = id(external_assist_media_player_select).current_option();
                     return !option.empty() && option != "None";
                 then:
-                  # Use Music Assistant's announcement path so short UI sounds
-                  # (wake chime, jack plug/unplug, button feedback) duck over
-                  # MA playback instead of replacing the queue. Keep MA's
-                  # pre-announce sound off to avoid doubling the firmware chime.
+                  # Let the selected HA media player handle announcement mode.
                   - homeassistant.action:
-                      action: music_assistant.play_announcement
+                      action: media_player.play_media
                       data:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                        url: !lambda return sound_file_url;
+                        media_content_id: !lambda return sound_file_url;
+                        media_content_type: music
+                      data_template:
+                        announce: "{{ true }}"
           else:
             - lambda: |-
                 if (priority) {

@@ -150,21 +150,12 @@ voice_assistant:
           - script.execute: control_leds
     # Reset the low-latency forwarding flag so the next run is clean.
     - lambda: id(external_tts_forwarded) = false;
-    # Stop ducking audio.
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 0   # 0 dB means no reduction
-        duration: 1.0s
 
-  # When the voice assistant starts: Play a wake up sound, duck audio.
+  # When the voice assistant starts, reset state for the next pipeline run.
   on_start:
     # Reset the low-latency forwarding flag so the next pipeline run can forward
     # the streaming TTS URL to the external media player.
     - lambda: id(external_tts_forwarded) = false;
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 20   # Number of dB quieter; higher implies more quiet, 0 implies full volume
-        duration: 0.0s          # The duration of the transition (default is 0)
   on_listening:
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
     - script.execute: control_leds
@@ -202,10 +193,10 @@ voice_assistant:
                 - media_player.stop:
                     id: external_media_player
                     announcement: true
-                # Forward the streaming URL to the configured Music Assistant
-                # media_player via MA's announcement path. This bypasses tts.speak
-                # entirely and avoids a second TTS generation on the HA side - the
-                # URL is the same streaming URL HA uses for the local speaker.
+                # Forward the streaming URL to the configured HA media_player
+                # in announcement mode. This bypasses tts.speak entirely and
+                # avoids a second TTS generation on the HA side - the URL is
+                # the same streaming URL HA uses for the local speaker.
                 - if:
                     condition:
                       lambda: |-
@@ -213,12 +204,13 @@ voice_assistant:
                         return !option.empty() && option != "None";
                     then:
                       - homeassistant.action:
-                          action: music_assistant.play_announcement
+                          action: media_player.play_media
                           data:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                            url: !lambda 'return x;'
+                            media_content_id: !lambda 'return x;'
+                            media_content_type: music
                           data_template:
-                            use_pre_announce: "{{ true }}"
+                            announce: "{{ true }}"
                       - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
@@ -287,23 +279,19 @@ voice_assistant:
               id: external_media_player
               announcement: true
           - homeassistant.action:
-              action: music_assistant.play_announcement
+              action: media_player.play_media
               data:
                 entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                url: !lambda 'return x;'
+                media_content_id: !lambda 'return x;'
+                media_content_type: music
               data_template:
-                use_pre_announce: "{{ true }}"
+                announce: "{{ true }}"
           - lambda: id(external_tts_forwarded) = true;
   # When the voice assistant ends ...
   on_end:
     - wait_until:
         not:
           voice_assistant.is_running:
-    # Stop ducking audio.
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 0   # 0 dB means no reduction
-        duration: 1.0s
     # Stop the script that would potentially enable the stop word if the response is longer than a second
     - script.stop: activate_stop_word_if_tts_step_is_long
     # Disable the stop word (If the tiemr is not ringing)
