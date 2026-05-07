@@ -353,23 +353,41 @@ script:
                     const auto option = id(external_assist_media_player_select).current_option();
                     return !option.empty() && option != "None";
                 then:
-                  # Let Music Assistant play external sounds from a plain URL.
-                  # Keep MA's pre-announce chime disabled.
+                  # Let the selected Music Assistant player play direct URLs
+                  # using the same manual-entry metadata shape as HA DevTools.
                   - homeassistant.action:
-                      action: music_assistant.play_announcement
+                      action: media_player.play_media
                       data:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                        url: !lambda return sound_file_url;
                       data_template:
-                        use_pre_announce: "{{ false }}"
+                        announce: "{{ true }}"
+                        media: !lambda |-
+                          std::string url = sound_file_url;
+                          std::string entity = id(external_assist_media_player_select).current_option();
+                          auto escape = [](std::string value) {
+                            size_t pos = 0;
+                            while ((pos = value.find("\\", pos)) != std::string::npos) {
+                              value.replace(pos, 1, "\\\\");
+                              pos += 2;
+                            }
+                            pos = 0;
+                            while ((pos = value.find("'", pos)) != std::string::npos) {
+                              value.replace(pos, 1, "\\'");
+                              pos += 2;
+                            }
+                            return value;
+                          };
+                          url = escape(url);
+                          entity = escape(entity);
+                          return "{{ {'media_content_id': '" + url + "', 'media_content_type': '', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
                       on_success:
                         - logger.log:
                             level: DEBUG
-                            format: "External MA sound announcement accepted by HA"
+                            format: "External play_media sound accepted by HA"
                       on_error:
                         - logger.log:
                             level: WARN
-                            format: "External MA sound announcement failed: %s"
+                            format: "External play_media sound failed: %s"
                             args: ['error.c_str()']
           else:
             - lambda: |-

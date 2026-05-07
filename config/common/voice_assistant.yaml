@@ -239,10 +239,9 @@ voice_assistant:
                 - media_player.stop:
                     id: external_media_player
                     announcement: true
-                # Forward the streaming URL through Music Assistant's URL-only
-                # announcement path. This bypasses tts.speak entirely and avoids
-                # a second TTS generation on the HA side - the URL is the same
-                # streaming URL HA uses for the local speaker.
+                # Forward the streaming URL to the selected Music Assistant
+                # player through media_player.play_media. The MA player expects
+                # the manual-entry metadata shape below for direct URLs.
                 - if:
                     condition:
                       lambda: |-
@@ -250,20 +249,38 @@ voice_assistant:
                         return !option.empty() && option != "None";
                     then:
                       - homeassistant.action:
-                          action: music_assistant.play_announcement
+                          action: media_player.play_media
                           data:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                            url: !lambda 'return x;'
                           data_template:
-                            use_pre_announce: "{{ false }}"
+                            announce: "{{ true }}"
+                            media: !lambda |-
+                              std::string url = x;
+                              std::string entity = id(external_assist_media_player_select).current_option();
+                              auto escape = [](std::string value) {
+                                size_t pos = 0;
+                                while ((pos = value.find("\\", pos)) != std::string::npos) {
+                                  value.replace(pos, 1, "\\\\");
+                                  pos += 2;
+                                }
+                                pos = 0;
+                                while ((pos = value.find("'", pos)) != std::string::npos) {
+                                  value.replace(pos, 1, "\\'");
+                                  pos += 2;
+                                }
+                                return value;
+                              };
+                              url = escape(url);
+                              entity = escape(entity);
+                              return "{{ {'media_content_id': '" + url + "', 'media_content_type': '', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
                           on_success:
                             - logger.log:
                                 level: DEBUG
-                                format: "External MA streaming TTS accepted by HA"
+                                format: "External play_media streaming TTS accepted by HA"
                           on_error:
                             - logger.log:
                                 level: WARN
-                                format: "External MA streaming TTS failed: %s"
+                                format: "External play_media streaming TTS failed: %s"
                                 args: ['error.c_str()']
                       - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
@@ -345,20 +362,38 @@ voice_assistant:
               id: external_media_player
               announcement: true
           - homeassistant.action:
-              action: music_assistant.play_announcement
+              action: media_player.play_media
               data:
                 entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                url: !lambda 'return x;'
               data_template:
-                use_pre_announce: "{{ false }}"
+                announce: "{{ true }}"
+                media: !lambda |-
+                  std::string url = x;
+                  std::string entity = id(external_assist_media_player_select).current_option();
+                  auto escape = [](std::string value) {
+                    size_t pos = 0;
+                    while ((pos = value.find("\\", pos)) != std::string::npos) {
+                      value.replace(pos, 1, "\\\\");
+                      pos += 2;
+                    }
+                    pos = 0;
+                    while ((pos = value.find("'", pos)) != std::string::npos) {
+                      value.replace(pos, 1, "\\'");
+                      pos += 2;
+                    }
+                    return value;
+                  };
+                  url = escape(url);
+                  entity = escape(entity);
+                  return "{{ {'media_content_id': '" + url + "', 'media_content_type': '', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
               on_success:
                 - logger.log:
                     level: DEBUG
-                    format: "External MA final TTS accepted by HA"
+                    format: "External play_media final TTS accepted by HA"
               on_error:
                 - logger.log:
                     level: WARN
-                    format: "External MA final TTS failed: %s"
+                    format: "External play_media final TTS failed: %s"
                     args: ['error.c_str()']
           - lambda: id(external_tts_forwarded) = true;
   # When the voice assistant ends ...
