@@ -268,6 +268,10 @@ voice_assistant:
                                 pos += 2;
                               }
                               return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {}} }}";
+                          on_success:
+                            - logger.log:
+                                level: DEBUG
+                                format: "External play_media streaming TTS accepted by HA"
                           on_error:
                             - logger.log:
                                 level: WARN
@@ -293,15 +297,17 @@ voice_assistant:
         then:
           - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
-          - if:
-              condition:
-                # Only cancel the local speaker if nothing has been forwarded yet -
-                # otherwise we already stopped it in on_intent_progress.
-                lambda: 'return !id(external_tts_forwarded);'
-              then:
-                - media_player.stop:
-                    id: external_media_player
-                    announcement: true
+          # The voice_assistant core queues the local announcement just before
+          # on_intent_progress fires. The early stop there can race with that
+          # queued play, so stop again at TTS start when the local player has
+          # actually entered the announcement path.
+          - media_player.stop:
+              id: external_media_player
+              announcement: true
+          - delay: 50ms
+          - media_player.stop:
+              id: external_media_player
+              announcement: true
     - if:
         condition:
           # The intent_progress trigger didn't start the TTS Reponse
@@ -361,6 +367,10 @@ voice_assistant:
                     pos += 2;
                   }
                   return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {}} }}";
+              on_success:
+                - logger.log:
+                    level: DEBUG
+                    format: "External play_media final TTS accepted by HA"
               on_error:
                 - logger.log:
                     level: WARN
