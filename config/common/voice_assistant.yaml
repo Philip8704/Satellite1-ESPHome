@@ -8,6 +8,11 @@ substitutions:
   # different host or port.
   mww_capture_endpoint: http://homeassistant.local:8765/upload
 
+  # External media player volume while the Satellite is actively listening or
+  # processing. The previous volume is snapshotted in Home Assistant and
+  # restored when the response starts.
+  external_listening_duck_volume: "0.18"
+
   # Phases of the Voice Assistant
   # The voice assistant is ready to be triggered by a wake word
   voice_assist_idle_phase_id: '1'
@@ -39,6 +44,11 @@ globals:
   # run. When true we skip any fallback (tts.speak / on_tts_end) so that we
   # never trigger a second TTS generation on the HA side and never double-play.
   - id: external_tts_forwarded
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: external_listening_duck_active
     type: bool
     restore_value: no
     initial_value: 'false'
@@ -105,6 +115,11 @@ micro_wake_word:
                           else:
                             - if:
                                 condition:
+                                  switch.is_on: external_assist_speaker_switch
+                                then:
+                                  - script.execute: duck_external_listening_audio
+                            - if:
+                                condition:
                                   and:
                                     - switch.is_on: wake_sound
                                     - switch.is_off: external_assist_speaker_switch
@@ -150,36 +165,50 @@ voice_assistant:
           - script.execute: control_leds
     # Reset the low-latency forwarding flag so the next run is clean.
     - lambda: id(external_tts_forwarded) = false;
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 0
-        duration: 0.3s
+    - if:
+        condition:
+          switch.is_on: external_assist_speaker_switch
+        then:
+          - script.execute: restore_external_listening_audio
+        else:
+          - mixer_speaker.apply_ducking:
+              id: media_mixing_input
+              decibel_reduction: 0
+              duration: 1.0s
 
   # When the voice assistant starts, reset state for the next pipeline run.
   on_start:
     # Reset the low-latency forwarding flag so the next pipeline run can forward
     # the streaming TTS URL to the external media player.
     - lambda: id(external_tts_forwarded) = false;
+    - if:
+        condition:
+          switch.is_on: external_assist_speaker_switch
+        then:
+          - script.execute: duck_external_listening_audio
+        else:
+          - mixer_speaker.apply_ducking:
+              id: media_mixing_input
+              decibel_reduction: 20
+              duration: 0.0s
   on_listening:
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 20
-        duration: 0.0s
+    - if:
+        condition:
+          switch.is_on: external_assist_speaker_switch
+        then:
+          - script.execute: duck_external_listening_audio
     - script.execute: control_leds
   on_stt_vad_start:
     - lambda: id(voice_assistant_phase) = ${voice_assist_listening_for_command_phase_id};
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 20
-        duration: 0.0s
+    - if:
+        condition:
+          switch.is_on: external_assist_speaker_switch
+        then:
+          - script.execute: duck_external_listening_audio
     - script.execute: control_leds
   on_stt_vad_end:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 0
-        duration: 0.3s
     - script.execute: control_leds
   on_intent_progress:
     - lambda: |-
@@ -199,6 +228,7 @@ voice_assistant:
               condition:
                 switch.is_on: external_assist_speaker_switch
               then:
+                - script.execute: restore_external_listening_audio
                 - lambda: |-
                     ESP_LOGW("tts_fwd", "on_intent_progress forwarding streaming TTS URL to external HA media player: %s",
                              id(external_assist_media_player_select).current_option().c_str());
@@ -223,10 +253,26 @@ voice_assistant:
                           action: media_player.play_media
                           data:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                            media_content_id: !lambda 'return x;'
-                            media_content_type: music
                           data_template:
                             announce: "{{ true }}"
+                            media: !lambda |-
+                              std::string url = x;
+                              size_t pos = 0;
+                              while ((pos = url.find("\\", pos)) != std::string::npos) {
+                                url.replace(pos, 1, "\\\\");
+                                pos += 2;
+                              }
+                              pos = 0;
+                              while ((pos = url.find("'", pos)) != std::string::npos) {
+                                url.replace(pos, 1, "\\'");
+                                pos += 2;
+                              }
+                              return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {}} }}";
+                          on_error:
+                            - logger.log:
+                                level: WARN
+                                format: "External play_media streaming TTS failed: %s"
+                                args: ['error.c_str()']
                       - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
@@ -245,6 +291,7 @@ voice_assistant:
         condition:
           switch.is_on: external_assist_speaker_switch
         then:
+          - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
           - if:
               condition:
@@ -290,6 +337,7 @@ voice_assistant:
           - lambda: |-
               ESP_LOGD("tts_fwd", "on_tts_end forwarding TTS URL to %s",
                        id(external_assist_media_player_select).current_option().c_str());
+          - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
           - media_player.stop:
               id: external_media_player
@@ -298,20 +346,42 @@ voice_assistant:
               action: media_player.play_media
               data:
                 entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                media_content_id: !lambda 'return x;'
-                media_content_type: music
               data_template:
                 announce: "{{ true }}"
+                media: !lambda |-
+                  std::string url = x;
+                  size_t pos = 0;
+                  while ((pos = url.find("\\", pos)) != std::string::npos) {
+                    url.replace(pos, 1, "\\\\");
+                    pos += 2;
+                  }
+                  pos = 0;
+                  while ((pos = url.find("'", pos)) != std::string::npos) {
+                    url.replace(pos, 1, "\\'");
+                    pos += 2;
+                  }
+                  return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {}} }}";
+              on_error:
+                - logger.log:
+                    level: WARN
+                    format: "External play_media final TTS failed: %s"
+                    args: ['error.c_str()']
           - lambda: id(external_tts_forwarded) = true;
   # When the voice assistant ends ...
   on_end:
     - wait_until:
         not:
           voice_assistant.is_running:
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 0
-        duration: 0.3s
+    - if:
+        condition:
+          switch.is_on: external_assist_speaker_switch
+        then:
+          - script.execute: restore_external_listening_audio
+        else:
+          - mixer_speaker.apply_ducking:
+              id: media_mixing_input
+              decibel_reduction: 0
+              duration: 1.0s
     # Stop the script that would potentially enable the stop word if the response is longer than a second
     - script.stop: activate_stop_word_if_tts_step_is_long
     # Disable the stop word (If the tiemr is not ringing)
@@ -342,6 +412,70 @@ voice_assistant:
     - script.execute: control_leds
 
 script:
+  - id: duck_external_listening_audio
+    mode: restart
+    then:
+      - if:
+          condition:
+            switch.is_on: external_assist_speaker_switch
+          then:
+            - if:
+                condition:
+                  lambda: |-
+                    const auto option = id(external_assist_media_player_select).current_option();
+                    return !id(external_listening_duck_active) && !option.empty() && option != "None";
+                then:
+                  - homeassistant.action:
+                      action: scene.create
+                      data:
+                        scene_id: "${node_name}_external_speaker_before_listening"
+                        snapshot_entities: !lambda return id(external_assist_media_player_select).current_option();
+                      on_error:
+                        - logger.log:
+                            level: WARN
+                            format: "External listening volume snapshot failed: %s"
+                            args: ['error.c_str()']
+                  - homeassistant.action:
+                      action: media_player.volume_set
+                      data:
+                        entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                      data_template:
+                        volume_level: !lambda |-
+                          std::string entity = id(external_assist_media_player_select).current_option();
+                          return "{{ [state_attr('" + entity + "', 'volume_level') | float(${external_listening_duck_volume}), ${external_listening_duck_volume}] | min }}";
+                      on_error:
+                        - logger.log:
+                            level: WARN
+                            format: "External listening volume duck failed: %s"
+                            args: ['error.c_str()']
+                  - lambda: id(external_listening_duck_active) = true;
+
+  - id: restore_external_listening_audio
+    mode: restart
+    then:
+      - if:
+          condition:
+            switch.is_on: external_assist_speaker_switch
+          then:
+            - if:
+                condition:
+                  and:
+                    - lambda: return id(external_listening_duck_active);
+                    - lambda: |-
+                        const auto option = id(external_assist_media_player_select).current_option();
+                        return !option.empty() && option != "None";
+                then:
+                  - homeassistant.action:
+                      action: scene.turn_on
+                      data:
+                        entity_id: "scene.${node_name}_external_speaker_before_listening"
+                      on_error:
+                        - logger.log:
+                            level: WARN
+                            format: "External listening volume restore failed: %s"
+                            args: ['error.c_str()']
+                  - lambda: id(external_listening_duck_active) = false;
+
   # Script used activate the stop word if the TTS step is long.
   # Why is this wrapped on a script?
   #   Becasue we want to stop the sequence if the TTS step is faster than that.

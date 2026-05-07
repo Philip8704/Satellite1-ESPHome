@@ -277,6 +277,36 @@ media_player:
       - script.execute: control_leds
     on_volume:
       - script.execute: control_leds
+    # Native internal-speaker ducking: announcements/TTS duck only the media
+    # mixer input, leaving the announcement pipeline at full volume.
+    on_announcement:
+      - if:
+          condition:
+            switch.is_off: external_assist_speaker_switch
+          then:
+            - mixer_speaker.apply_ducking:
+                id: media_mixing_input
+                decibel_reduction: 20
+                duration: 0.0s
+
+    # Restore internal media ducking when the local player is no longer
+    # announcing and Assist is not running.
+    on_state:
+      - if:
+          condition:
+            and:
+              - switch.is_off: external_assist_speaker_switch
+              - switch.is_off: timer_ringing
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_announcing:
+                    id: external_media_player
+          then:
+            - mixer_speaker.apply_ducking:
+                id: media_mixing_input
+                decibel_reduction: 0
+                duration: 1.0s
 
     files:
       - id: center_button_press_sound
@@ -329,10 +359,26 @@ script:
                       action: media_player.play_media
                       data:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                        media_content_id: !lambda return sound_file_url;
-                        media_content_type: music
                       data_template:
                         announce: "{{ true }}"
+                        media: !lambda |-
+                          std::string url = sound_file_url;
+                          size_t pos = 0;
+                          while ((pos = url.find("\\", pos)) != std::string::npos) {
+                            url.replace(pos, 1, "\\\\");
+                            pos += 2;
+                          }
+                          pos = 0;
+                          while ((pos = url.find("'", pos)) != std::string::npos) {
+                            url.replace(pos, 1, "\\'");
+                            pos += 2;
+                          }
+                          return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {}} }}";
+                      on_error:
+                        - logger.log:
+                            level: WARN
+                            format: "External play_media sound failed: %s"
+                            args: ['error.c_str()']
           else:
             - lambda: |-
                 if (priority) {
