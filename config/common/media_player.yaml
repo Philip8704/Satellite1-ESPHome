@@ -380,10 +380,6 @@ script:
                           url = escape(url);
                           entity = escape(entity);
                           return "{{ {'media_content_id': '" + url + "', 'media_content_type': '', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
-                      on_success:
-                        - logger.log:
-                            level: DEBUG
-                            format: "External play_media sound accepted by HA"
                       on_error:
                         - logger.log:
                             level: WARN

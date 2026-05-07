@@ -8,10 +8,10 @@ substitutions:
   # different host or port.
   mww_capture_endpoint: http://homeassistant.local:8765/upload
 
-  # External media player volume while the Satellite is actively listening or
-  # processing. The previous volume is snapshotted in Home Assistant and
-  # restored when the response starts.
-  external_listening_duck_volume: "0.18"
+  # External media player volume multiplier while the Satellite is actively
+  # listening or processing. The previous volume is restored with the inverse
+  # multiplier when the response starts.
+  external_listening_duck_factor: "0.5"
 
   # Phases of the Voice Assistant
   # The voice assistant is ready to be triggered by a wake word
@@ -211,11 +211,6 @@ voice_assistant:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
     - script.execute: control_leds
   on_intent_progress:
-    - lambda: |-
-        ESP_LOGD("tts_fwd", "on_intent_progress | URL='%s' | switch=%s | entity='%s'",
-                 x.c_str(),
-                 id(external_assist_speaker_switch).state ? "ON" : "OFF",
-                 id(external_assist_media_player_select).current_option().c_str());
     - if:
         condition:
           # A nonempty x variable means a streaming TTS url was sent to the local media player
@@ -229,9 +224,6 @@ voice_assistant:
                 switch.is_on: external_assist_speaker_switch
               then:
                 - script.execute: restore_external_listening_audio
-                - lambda: |-
-                    ESP_LOGW("tts_fwd", "on_intent_progress forwarding streaming TTS URL to external HA media player: %s",
-                             id(external_assist_media_player_select).current_option().c_str());
                 # Mute the internal speaker so the local media_player (already told to play
                 # this URL by the voice_assistant core) produces no audible output.
                 - dac_proxy.activate_line_out:
@@ -273,10 +265,6 @@ voice_assistant:
                               url = escape(url);
                               entity = escape(entity);
                               return "{{ {'media_content_id': '" + url + "', 'media_content_type': '', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
-                          on_success:
-                            - logger.log:
-                                level: DEBUG
-                                format: "External play_media streaming TTS accepted by HA"
                           on_error:
                             - logger.log:
                                 level: WARN
@@ -306,10 +294,6 @@ voice_assistant:
           # on_intent_progress fires. The early stop there can race with that
           # queued play, so stop again at TTS start when the local player has
           # actually entered the announcement path.
-          - logger.log:
-              level: WARN
-              tag: tts_fwd
-              format: "on_tts_start forcing local announcement stop for external mode"
           - media_player.stop:
               id: external_media_player
               announcement: true
@@ -317,10 +301,6 @@ voice_assistant:
           - media_player.stop:
               id: external_media_player
               announcement: true
-          - logger.log:
-              level: WARN
-              tag: tts_fwd
-              format: "on_tts_start forced local announcement stop sent twice"
     - if:
         condition:
           # The intent_progress trigger didn't start the TTS Reponse
@@ -337,12 +317,6 @@ voice_assistant:
   # forward that URL to the external HA media player so we still skip the
   # second-generation cost of `tts.speak`.
   on_tts_end:
-    - lambda: |-
-        ESP_LOGD("tts_fwd", "on_tts_end | URL='%s' | switch=%s | entity='%s' | already_forwarded=%s",
-                 x.c_str(),
-                 id(external_assist_speaker_switch).state ? "ON" : "OFF",
-                 id(external_assist_media_player_select).current_option().c_str(),
-                 id(external_tts_forwarded) ? "true" : "false");
     - if:
         condition:
           and:
@@ -353,9 +327,6 @@ voice_assistant:
                 const auto option = id(external_assist_media_player_select).current_option();
                 return !option.empty() && option != "None";
         then:
-          - lambda: |-
-              ESP_LOGD("tts_fwd", "on_tts_end forwarding TTS URL to %s",
-                       id(external_assist_media_player_select).current_option().c_str());
           - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
           - media_player.stop:
@@ -386,10 +357,6 @@ voice_assistant:
                   url = escape(url);
                   entity = escape(entity);
                   return "{{ {'media_content_id': '" + url + "', 'media_content_type': '', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
-              on_success:
-                - logger.log:
-                    level: DEBUG
-                    format: "External play_media final TTS accepted by HA"
               on_error:
                 - logger.log:
                     level: WARN
@@ -455,23 +422,13 @@ script:
                     return !id(external_listening_duck_active) && !option.empty() && option != "None";
                 then:
                   - homeassistant.action:
-                      action: scene.create
-                      data:
-                        scene_id: "${node_name}_external_speaker_before_listening"
-                        snapshot_entities: !lambda return id(external_assist_media_player_select).current_option();
-                      on_error:
-                        - logger.log:
-                            level: WARN
-                            format: "External listening volume snapshot failed: %s"
-                            args: ['error.c_str()']
-                  - homeassistant.action:
                       action: media_player.volume_set
                       data:
                         entity_id: !lambda return id(external_assist_media_player_select).current_option();
                       data_template:
                         volume_level: !lambda |-
                           std::string entity = id(external_assist_media_player_select).current_option();
-                          return "{{ [state_attr('" + entity + "', 'volume_level') | float(${external_listening_duck_volume}), ${external_listening_duck_volume}] | min }}";
+                          return "{{ ((state_attr('" + entity + "', 'volume_level') | float(0.5)) * ${external_listening_duck_factor}) | round(3) }}";
                       on_error:
                         - logger.log:
                             level: WARN
@@ -495,9 +452,13 @@ script:
                         return !option.empty() && option != "None";
                 then:
                   - homeassistant.action:
-                      action: scene.turn_on
+                      action: media_player.volume_set
                       data:
-                        entity_id: "scene.${node_name}_external_speaker_before_listening"
+                        entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                      data_template:
+                        volume_level: !lambda |-
+                          std::string entity = id(external_assist_media_player_select).current_option();
+                          return "{{ [((state_attr('" + entity + "', 'volume_level') | float(0.25)) / ${external_listening_duck_factor}), 1] | min | round(3) }}";
                       on_error:
                         - logger.log:
                             level: WARN
@@ -561,13 +522,6 @@ mww_training_capture:
   models:
     - wake_word_model: hey_haeris
       lower_cutoff: 0.30
-  on_near_miss_detected:
-    # The component streams the WAV directly to the companion service in C++.
-    # This automation is only a lightweight log after a successful upload.
-    - logger.log:
-        level: INFO
-        format: "MWW near-miss for %s (max=%.2f, avg=%.2f)"
-        args: [ 'wake_word.c_str()', 'max_prob', 'avg_prob' ]
 
 select:
   - platform: template

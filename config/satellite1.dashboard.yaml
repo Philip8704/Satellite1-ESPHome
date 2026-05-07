@@ -4,7 +4,7 @@ substitutions:
   xmos_fw_version: "v1.0.3"
 
   # OPTIONALLY, set the log level to debug, info, warn, error
-  log_level: debug
+  log_level: INFO
   # OPTIONALLY, pick which HA TTS entity should be used when External Assist Speaker is ON.
   # ha_tts_entity_id: tts.edge_tts
 
@@ -47,6 +47,28 @@ packages:
 
 logger:
   level: ${log_level}
+  logs:
+    mww_training_capture: INFO
+    main: WARN
+    voice_assistant: WARN
+    media_player: WARN
+    speaker_media_player: WARN
+    speaker_media_player.pipeline: WARN
+    ring_buffer: WARN
+    i2s_audio.speaker: WARN
+    speaker_mixer: WARN
+    dac_proxy: WARN
+    micro_wake_word: WARN
+    snapcast_client: WARN
+    snapcast_stream: WARN
+    snapcast_rpc: WARN
+    transport: WARN
+    sensor: WARN
+    light: WARN
+    safe_mode: WARN
+    esp32.preferences: WARN
+    tas2780: WARN
+    ltr_als_ps: WARN
 
 ## OPTIONALLY, enable transport encryption for the API layer by uncommenting the following lines
 ## and replacing "REPLACE_BY_32_BIT_RANDOM_KEY" with a 32-character random key.

@@ -117,6 +117,26 @@ external_components:
 logger:
   deassert_rts_dtr: true
   hardware_uart: USB_SERIAL_JTAG
-  level: debug
+  level: INFO
   logs:
+    mww_training_capture: INFO
+    main: WARN
+    voice_assistant: WARN
+    media_player: WARN
+    speaker_media_player: WARN
+    speaker_media_player.pipeline: WARN
+    ring_buffer: WARN
+    i2s_audio.speaker: WARN
+    speaker_mixer: WARN
+    dac_proxy: WARN
+    micro_wake_word: WARN
+    snapcast_client: WARN
+    snapcast_stream: WARN
+    snapcast_rpc: WARN
+    transport: WARN
+    sensor: WARN
+    light: WARN
+    safe_mode: WARN
+    esp32.preferences: WARN
+    tas2780: WARN
     ltr_als_ps: WARN
