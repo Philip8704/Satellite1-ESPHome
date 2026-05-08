@@ -1,9 +1,0 @@
-[
-  "tools/mww_training_capture/tests/test_service.py::test_delete",
-  "tools/mww_training_capture/tests/test_service.py::test_export_zip",
-  "tools/mww_training_capture/tests/test_service.py::test_healthz",
-  "tools/mww_training_capture/tests/test_service.py::test_label_and_filter",
-  "tools/mww_training_capture/tests/test_service.py::test_summary_aggregates_devices_and_labels",
-  "tools/mww_training_capture/tests/test_service.py::test_upload_rejects_non_wav",
-  "tools/mww_training_capture/tests/test_service.py::test_upload_round_trip"
-]
