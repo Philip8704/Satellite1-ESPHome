@@ -245,6 +245,7 @@ audio { vertical-align: middle; }
   <label>Wake word: <input id="filter-ww" placeholder="(any)"></label>
   <button onclick="reload()">Refresh</button>
   <button onclick="window.location='/export?label=false_negative'">Export FN ZIP</button>
+  <button onclick="window.location='/export?label=true_negative'">Export TN ZIP</button>
 </div>
 
 <div id="summary" style="margin-top:1rem;font-size:.85rem;"></div>
