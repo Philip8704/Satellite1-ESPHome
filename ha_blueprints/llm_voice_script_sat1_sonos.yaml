@@ -216,14 +216,19 @@ blueprint:
             Optional. LEAVE EMPTY for almost every request — the calling
             Satellite1's area is used as the target by default.
 
-            ONLY set this when the user explicitly names a specific
-            speaker ("on the Sonos Beam", "on the kitchen Sonos", "on
-            the office speakers"). Must be the entity_id of a Music
-            Assistant media player. The artist or track name is NEVER
+            ONLY set this when the user explicitly names specific
+            speaker entities ("on the Sonos Beam", "on the kitchen
+            Sonos", "on G, H, and J"). Must be Music Assistant
+            media_player entity_ids. The artist or track name is NEVER
             a speaker.
+
+            If more than one speaker is named, return each speaker as a
+            separate list item. The script can recover from a combined
+            value like "G H and J", but a clean list is preferred.
 
             Examples:
               - "Play Queen on the Sonos Beam"     -> ["media_player.sonos_beam"]
+              - "Play Queen on G, H, and J"        -> ["media_player.g", "media_player.h", "media_player.j"]
               - "Play Queen"                       -> empty
               - "Play Bohemian Rhapsody"           -> empty
               - "Shuffle Muse on the office Sonos" -> ["media_player.office_sonos"]
