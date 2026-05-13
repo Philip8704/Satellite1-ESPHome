@@ -103,6 +103,7 @@ class SpeakerMediaPlayer : public Component,
   void play_snapcast_stream(const std::string &server_uri);
 #endif
   void set_playlist_delay_ms(AudioPipelineType pipeline_type, uint32_t delay_ms);
+  void set_announcement_finish_hold_ms(uint32_t hold_ms);
 
   /// @brief Updates this->volume and saves volume/mute state to flash for restortation if publish is true.
   void set_volume_(float volume, bool publish = true, bool restore_only = false);
@@ -129,6 +130,9 @@ class SpeakerMediaPlayer : public Component,
   // Processes commands from media_control_command_queue_.
   void watch_media_commands_();
 
+  // Keeps the announcement state active briefly after the current announcement drains.
+  bool hold_finished_announcement_();
+
   std::unique_ptr<AudioPipeline> announcement_pipeline_;
   std::unique_ptr<AudioPipeline> media_pipeline_;
   Speaker *media_speaker_{nullptr};
@@ -145,6 +149,10 @@ class SpeakerMediaPlayer : public Component,
   AudioPipelineState announcement_pipeline_state_{AudioPipelineState::STOPPED};
   bool announcement_repeat_one_{false};
   uint32_t announcement_playlist_delay_ms_{0};
+  uint32_t announcement_finish_hold_pending_ms_{0};
+  uint32_t announcement_finish_hold_started_ms_{0};
+  uint32_t announcement_finish_hold_duration_ms_{0};
+  bool announcement_finish_hold_active_{false};
 
   QueueHandle_t media_control_command_queue_;
 
