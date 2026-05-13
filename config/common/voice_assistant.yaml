@@ -11,7 +11,7 @@ substitutions:
   # External media player volume multiplier while the Satellite is actively
   # listening or processing. The previous volume is restored with the inverse
   # multiplier when the response starts.
-  external_listening_duck_factor: "0.5"
+  external_listening_duck_factor: "0.15"
 
   # Phases of the Voice Assistant
   # The voice assistant is ready to be triggered by a wake word
@@ -209,6 +209,11 @@ voice_assistant:
     - script.execute: control_leds
   on_stt_vad_end:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+    - if:
+        condition:
+          switch.is_on: external_assist_speaker_switch
+        then:
+          - script.execute: restore_external_listening_audio
     - script.execute: control_leds
   on_intent_progress:
     - if:
