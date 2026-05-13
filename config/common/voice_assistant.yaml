@@ -11,7 +11,7 @@ substitutions:
   # External media player volume multiplier while the Satellite is actively
   # listening or processing. The previous volume is restored with the inverse
   # multiplier when the response starts.
-  external_listening_duck_factor: "0.15"
+  external_listening_duck_factor: "0.05"
 
   # Phases of the Voice Assistant
   # The voice assistant is ready to be triggered by a wake word
