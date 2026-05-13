@@ -14,6 +14,7 @@ substitutions:
 
   esp32_fw_version: dev
   xmos_fw_version: "v1.0.3"
+  build_check_phrase: "SAT1_BUILD_CHECK_EXTERNAL_MIRROR_SCENE_2026_05_13"
 
 globals:
   # Global initialisation variable. Initialized to true and set to false once everything is connected. Only used to have a smooth "plugging" experience
@@ -46,6 +47,7 @@ esphome:
     - priority: -100
       then:
         - logger.log: "${company_name} ${project_name} ${component_name} running ESP firmware: ${esp32_fw_version} and XMOS firmware: ${xmos_fw_version}"
+        - logger.log: "BUILD CHECK PHRASE: ${build_check_phrase}"
         # Run the script to refresh the LED status
         - script.execute: control_leds
         - delay: 1s

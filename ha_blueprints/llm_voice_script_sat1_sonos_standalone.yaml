@@ -41,8 +41,8 @@ description: >-
     - media_description: a short human phrase for the spoken reply
       ("the best Queen songs"). Skip if obvious from media_id.
     - area: room name(s) — only when the user names a room.
-    - media_player: a specific MA player entity — only when the user
-      names a specific speaker by name.
+    - media_player: specific MA player entity/entities — only when the user
+      names one or more specific speakers by name.
 
   Targeting rules (READ THIS — wrong targeting is the most common failure):
     Voice requests always come from a Home Assistant Satellite1 device
@@ -60,10 +60,16 @@ description: >-
     The artist, track, album, playlist, or station name is NEVER a
     room. Do not copy media metadata into `area`.
 
-    Set `media_player` ONLY when the user explicitly names a specific
-    speaker entity, e.g. "on the Sonos Beam", "on the kitchen Sonos".
-    Otherwise leave `media_player` empty. The artist's name is never
-    a media_player.
+    Set `media_player` ONLY when the user explicitly names specific
+    speaker entities, e.g. "on the Sonos Beam", "on the kitchen Sonos",
+    or "on G, H, and J". Otherwise leave `media_player` empty. The
+    artist's name is never a media_player.
+
+    Multiple speakers: return every speaker as its own list item whenever
+    possible. The script defensively accepts comma-separated, "and"-
+    separated, or short space-separated values like "G H and J", resolves
+    them to Music Assistant players, groups them temporarily, and starts
+    playback on the group leader.
 
     Resolution order at runtime (defensive — the script validates and
     falls back if your `area` value is bogus or missing):
@@ -82,6 +88,7 @@ description: >-
       - "Play Hotel California by the Eagles in the bedroom"
                                                    -> area: ["bedroom"], media_player: empty
       - "Put on jazz on the Sonos Beam"            -> area: empty, media_player: ["media_player.sonos_beam"]
+      - "Play Queen on G, H, and J"                -> area: empty, media_player: ["media_player.g", "media_player.h", "media_player.j"]
       - "Play Adele"                               -> area: ["office"], media_player: empty
 
   How to pick media_type:
@@ -217,13 +224,18 @@ fields:
       Optional. LEAVE EMPTY for almost every request — the calling
       Satellite1's area is used as the target by default.
 
-      ONLY set this when the user explicitly names a specific speaker
-      ("on the Sonos Beam", "on the kitchen Sonos", "on the office
-      speakers"). Must be the entity_id of a Music Assistant media
-      player. The artist or track name is NEVER a speaker.
+      ONLY set this when the user explicitly names specific speaker
+      entities ("on the Sonos Beam", "on the kitchen Sonos", "on G, H,
+      and J"). Must be Music Assistant media_player entity_ids. The
+      artist or track name is NEVER a speaker.
+
+      If more than one speaker is named, return each speaker as a separate
+      list item. The script can recover from a combined value like "G H and
+      J", but a clean list is preferred.
 
       Examples:
         - "Play Queen on the Sonos Beam"  -> ["media_player.sonos_beam"]
+        - "Play Queen on G, H, and J"     -> ["media_player.g", "media_player.h", "media_player.j"]
         - "Play Queen"                    -> empty
         - "Play Bohemian Rhapsody"        -> empty
         - "Shuffle Muse on the office Sonos" -> ["media_player.office_sonos"]
@@ -248,7 +260,7 @@ sequence:
   # 1. Resolve targets, cache lookups, build action payload.
   # ---------------------------------------------------------------------------
   - variables:
-      version: "2026-04-27 sat1+sonos standalone"
+      version: "2026-05-13 sat1+sonos standalone grouped"
 
       # Hardcoded behavior. Edit these two values to change defaults:
       #   play_continuously: "Always" | "Use player settings" | "Never"
@@ -266,19 +278,59 @@ sequence:
       # Cache MA entity lookups once.
       ma_entities: "{{ integration_entities('music_assistant') }}"
       ma_friendly_names: "{{ ma_entities | map('state_attr', 'friendly_name') | list }}"
+      known_areas: "{{ areas() }}"
 
-      # Resolve any LLM-provided media_player references (entity_id OR friendly
-      # name) into a clean list of MA entity_ids.
-      player_data: >-
-        {% set ns = namespace(players=[]) %}
-        {% for p in media_player | default([], true) %}
-          {% if p in ma_entities %}
-            {% set ns.players = ns.players + [p] %}
-          {% elif p in ma_friendly_names %}
-            {% set ns.players = ns.players + (ma_entities | select('is_state_attr', 'friendly_name', p) | list) %}
-          {% endif %}
-        {% endfor %}
-        {{ ns.players }}
+      # Normalize target fields before validation. LLM tool calls are not
+      # always shaped like selector UI output: a multi-speaker request can
+      # arrive as ["G H and J"] or even as a bare "G H and J" string. These
+      # templates turn strings/lists into phrase candidates first; later
+      # resolution tries exact area/player matches before splitting a failed
+      # multi-word candidate into short aliases.
+      target_split_pattern: '(?i)\s*(?:[,;]|\+|&|\band\b|\bplus\b|\bwith\b)\s*'
+      area_candidates: >-
+        {%- set raw = area | default([], true) -%}
+        {%- if raw is string -%}
+          {%- set raw_items = [raw] -%}
+        {%- elif raw is iterable -%}
+          {%- set raw_items = raw | list -%}
+        {%- else -%}
+          {%- set raw_items = [] -%}
+        {%- endif -%}
+        {%- set ns = namespace(items=[]) -%}
+        {%- for item in raw_items -%}
+          {%- set text = item | string | trim -%}
+          {%- if text -%}
+            {%- set parts = (text | regex_replace(target_split_pattern, '|')).split('|') | map('trim') | reject('eq', '') | list -%}
+            {%- for part in parts -%}
+              {%- if part not in ns.items -%}
+                {%- set ns.items = ns.items + [part] -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{ ns.items }}
+      media_player_candidates: >-
+        {%- set raw = media_player | default([], true) -%}
+        {%- if raw is string -%}
+          {%- set raw_items = [raw] -%}
+        {%- elif raw is iterable -%}
+          {%- set raw_items = raw | list -%}
+        {%- else -%}
+          {%- set raw_items = [] -%}
+        {%- endif -%}
+        {%- set ns = namespace(items=[]) -%}
+        {%- for item in raw_items -%}
+          {%- set text = item | string | trim -%}
+          {%- if text -%}
+            {%- set parts = (text | regex_replace(target_split_pattern, '|')).split('|') | map('trim') | reject('eq', '') | list -%}
+            {%- for part in parts -%}
+              {%- if part not in ns.items -%}
+                {%- set ns.items = ns.items + [part] -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{ ns.items }}
 
       # Calling-device area fallback. When HA's Assist pipeline runs this
       # script as an LLM tool, `device_id` is shadowed in the script context
@@ -300,18 +352,77 @@ sequence:
       # real area is dropped, so the caller_area fallback can take over.
       resolved_areas: >-
         {%- set ns = namespace(items=[]) -%}
-        {%- set known = areas() -%}
-        {%- for a in area | default([], true) -%}
-          {%- if a in known -%}
+        {%- for a in area_candidates -%}
+          {%- if a in known_areas -%}
             {%- set ns.items = ns.items + [a] -%}
           {%- else -%}
             {%- set rid = area_id(a) -%}
-            {%- if rid and rid in known and rid not in ns.items -%}
+            {%- if rid and rid in known_areas and rid not in ns.items -%}
               {%- set ns.items = ns.items + [rid] -%}
             {%- endif -%}
           {%- endif -%}
         {%- endfor -%}
         {{ ns.items }}
+
+      # Resolve named players from the media_player field. If the LLM put
+      # speaker names into the area field by mistake, those area candidates
+      # are also tried when none of them resolved as real HA areas.
+      player_lookup_candidates: >-
+        {{ media_player_candidates + (area_candidates if not resolved_areas else []) }}
+      player_data: >-
+        {%- set ns = namespace(players=[]) -%}
+        {%- for candidate in player_lookup_candidates -%}
+          {%- set candidate_text = candidate | string | trim -%}
+          {%- if candidate_text -%}
+            {%- set found = namespace(count=0) -%}
+            {%- for term in [candidate_text] -%}
+              {%- set wanted = term | lower -%}
+              {%- if term in ma_entities and term not in ns.players -%}
+                {%- set ns.players = ns.players + [term] -%}
+                {%- set found.count = found.count + 1 -%}
+              {%- endif -%}
+              {%- for entity in ma_entities -%}
+                {%- set object_id = entity.split('.')[1] if '.' in entity else entity -%}
+                {%- set friendly = state_attr(entity, 'friendly_name') | default('', true) | string -%}
+                {%- if (friendly | lower == wanted
+                        or object_id | lower == wanted
+                        or object_id | replace('_', ' ') | lower == wanted)
+                      and entity not in ns.players -%}
+                  {%- set ns.players = ns.players + [entity] -%}
+                  {%- set found.count = found.count + 1 -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- set rid = term if term in known_areas else area_id(term) -%}
+              {%- if rid and rid in known_areas -%}
+                {%- for entity in ma_entities | select('in', area_entities(rid)) | list -%}
+                  {%- if entity not in ns.players -%}
+                    {%- set ns.players = ns.players + [entity] -%}
+                    {%- set found.count = found.count + 1 -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- if found.count == 0 and ' ' in candidate_text -%}
+              {%- for term in candidate_text.split() -%}
+                {%- set wanted = term | lower -%}
+                {%- if term in ma_entities and term not in ns.players -%}
+                  {%- set ns.players = ns.players + [term] -%}
+                {%- endif -%}
+                {%- for entity in ma_entities -%}
+                  {%- set object_id = entity.split('.')[1] if '.' in entity else entity -%}
+                  {%- set friendly = state_attr(entity, 'friendly_name') | default('', true) | string -%}
+                  {%- if (friendly | lower == wanted
+                          or object_id | lower == wanted
+                          or object_id | replace('_', ' ') | lower == wanted)
+                        and entity not in ns.players -%}
+                    {%- set ns.players = ns.players + [entity] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+            {%- endif -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{ ns.players }}
 
       # Translate enqueue_default into the value MA expects. The MA queue
       # options are: play, replace, next, replace_next, add. We default to
@@ -321,26 +432,50 @@ sequence:
         {% set m = {'Replace': 'play', 'Add to queue': 'add', 'Play next': 'next'} %}
         {{ m.get(enqueue_default, 'play') }}
 
-      # Final target_data. Priority:
-      #   1. Validated area_id list from the LLM
-      #   2. Validated media_player list from the LLM
-      #   3. Caller Sat1's area (the default for "play X" with no room)
-      #   4. NA sentinel — stop with the spoken "tell me which room" reply
-      # The caller_area fallback wins whenever resolved_areas is empty AND
-      # player_data is empty — so a hallucinated bogus area no longer
-      # blocks the Sat1-area default from kicking in.
+      # Resolve targets into concrete MA players. Priority:
+      #   1. Explicit validated media players, including recovered "G H and J"
+      #   2. Validated areas resolved to their MA players
+      #   3. Caller Sat1's area resolved to its MA players
+      #   4. NA sentinel - stop with the spoken "tell me which room" reply
+      # Multiple players are grouped before playback; the service target is
+      # the group leader so MA receives a single queue command.
+      area_player_data: >-
+        {%- set ns = namespace(players=[]) -%}
+        {%- for area_item in resolved_areas -%}
+          {%- for entity in ma_entities | select('in', area_entities(area_item)) | list -%}
+            {%- if entity not in ns.players -%}
+              {%- set ns.players = ns.players + [entity] -%}
+            {%- endif -%}
+          {%- endfor -%}
+        {%- endfor -%}
+        {{ ns.players }}
+      caller_area_player_data: >-
+        {%- set ns = namespace(players=[]) -%}
+        {%- if caller_area -%}
+          {%- for entity in ma_entities | select('in', area_entities(caller_area)) | list -%}
+            {%- if entity not in ns.players -%}
+              {%- set ns.players = ns.players + [entity] -%}
+            {%- endif -%}
+          {%- endfor -%}
+        {%- endif -%}
+        {{ ns.players }}
+      playback_players: >-
+        {%- if player_data -%}
+          {{ player_data }}
+        {%- elif area_player_data -%}
+          {{ area_player_data }}
+        {%- elif caller_area_player_data -%}
+          {{ caller_area_player_data }}
+        {%- else -%}
+          {{ [] }}
+        {%- endif -%}
+      group_leader: "{{ playback_players | first | default('NA') }}"
+      group_members: >-
+        {{ playback_players[1:] if playback_players | count > 1 else [] }}
       target_data:
-        area_id: >-
-          {% if resolved_areas %}
-            {{ resolved_areas }}
-          {% elif not player_data and caller_area %}
-            {{ [caller_area] }}
-          {% else %}
-            NA
-          {% endif %}
         entity_id: >-
-          {% if player_data %}
-            {{ player_data }}
+          {% if group_leader != 'NA' %}
+            {{ group_leader }}
           {% else %}
             NA
           {% endif %}
@@ -358,7 +493,7 @@ sequence:
   - if:
       - condition: template
         value_template: >-
-          {{ target_data.area_id == 'NA' and target_data.entity_id == 'NA' }}
+          {{ target_data.entity_id == 'NA' }}
     then:
       - stop: ""
         response_variable: invalid_target
@@ -435,8 +570,19 @@ sequence:
         {{ dict(action_data.items() | rejectattr('1', 'eq', 'NA')) }}
 
   # ---------------------------------------------------------------------------
-  # 4. Fire play_media and (only if needed) shuffle_set in parallel.
+  # 4. Group multi-player requests, then fire play_media and shuffle_set.
   # ---------------------------------------------------------------------------
+  - if:
+      - condition: template
+        value_template: "{{ group_members | count > 0 }}"
+    then:
+      - alias: Group selected Music Assistant players
+        action: media_player.join
+        target:
+          entity_id: "{{ group_leader }}"
+        data:
+          group_members: "{{ group_members }}"
+
   - parallel:
       - alias: Play music using Music Assistant
         action: music_assistant.play_media
@@ -457,14 +603,11 @@ sequence:
   # ---------------------------------------------------------------------------
   - variables:
       spoken_target: >-
-        {%- set ids = target_data.entity_id if target_data.entity_id != 'NA' else [] -%}
+        {%- set ids = playback_players | default([], true) -%}
         {%- if ids and ids is iterable and ids is not string -%}
           {{ ids | map('state_attr', 'friendly_name') | reject('none') | list | join(', ') }}
         {%- elif ids and ids is string -%}
           {{ state_attr(ids, 'friendly_name') or ids }}
-        {%- elif target_data.area_id != 'NA' -%}
-          {%- set aids = target_data.area_id if target_data.area_id is iterable and target_data.area_id is not string else [target_data.area_id] -%}
-          {{ aids | map('area_name') | reject('none') | list | join(', ') }}
         {%- endif -%}
       # response_variable contents must be a dict, not a bare string.
       reply:
