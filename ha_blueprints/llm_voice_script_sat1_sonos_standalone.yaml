@@ -286,7 +286,7 @@ sequence:
       # templates turn strings/lists into phrase candidates first; later
       # resolution tries exact area/player matches before splitting a failed
       # multi-word candidate into short aliases.
-      target_split_pattern: '(?i)\s*(?:[,;]|\+|&|\band\b|\bplus\b|\bwith\b)\s*'
+      target_split_pattern: '(?i)\s*(?:[,;]|\+|&|\band\b|\bplus\b)\s*'
       area_candidates: >-
         {%- set raw = area | default([], true) -%}
         {%- if raw is string -%}
@@ -439,6 +439,8 @@ sequence:
       #   4. NA sentinel - stop with the spoken "tell me which room" reply
       # Multiple players are grouped before playback; the service target is
       # the group leader so MA receives a single queue command.
+      # If explicit speakers or a valid named area do not resolve to MA
+      # players, we stop instead of falling back to the calling room.
       area_player_data: >-
         {%- set ns = namespace(players=[]) -%}
         {%- for area_item in resolved_areas -%}
@@ -462,8 +464,12 @@ sequence:
       playback_players: >-
         {%- if player_data -%}
           {{ player_data }}
+        {%- elif media_player_candidates -%}
+          {{ [] }}
         {%- elif area_player_data -%}
           {{ area_player_data }}
+        {%- elif resolved_areas -%}
+          {{ [] }}
         {%- elif caller_area_player_data -%}
           {{ caller_area_player_data }}
         {%- else -%}
@@ -549,7 +555,7 @@ sequence:
       # radio_mode=true so MA seeds an endless mix from whatever it finds.
       # Final shape for "play house music in the office":
       #   action: music_assistant.play_media
-      #   target: { area_id: office }
+      #   target: { entity_id: media_player.<resolved_group_leader> }
       #   data:   { media_id: "house music", radio_mode: true, enqueue: play }
       action_data:
         media_id: >-
