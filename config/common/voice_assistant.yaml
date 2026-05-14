@@ -15,7 +15,7 @@ substitutions:
   external_listening_snapshot_scene_id: "${node_name}_external_listening_audio_snapshot"
   # Extra time to keep local mirrored external prompts active before HA starts
   # follow-up listening after ask_question/start_conversation prompt playback.
-  external_prompt_mirror_hold_ms: "900"
+  external_prompt_mirror_hold_ms: "200"
   # HA scene id used to restore the selected external media player after the
   # externally initiated ask_question/start_conversation prompt + listen window.
   external_prompt_snapshot_scene_id: "${node_name}_external_prompt_audio_snapshot"
