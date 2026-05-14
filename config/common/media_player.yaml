@@ -50,38 +50,41 @@ select:
 
   # External Assist Media Player select.
   #
-  # The base firmware keeps a "None" fallback so the firmware still builds
-  # without per-device speakers. When adding real speakers via ESPHome's
-  # `!extend` mechanism, remove that fallback so the UI only shows your
-  # configured media players.
+  # The base firmware keeps a disabled media_player.none fallback through the default
+  # external_assist_primary_media_player substitution so the firmware still builds.
+  # For a normal one-room satellite, set only this substitution in the
+  # per-device YAML before flashing:
   #
-  # Example user override (in their per-device YAML):
-  #
-  #   select:
-  #     - id: external_assist_media_player_select
-  #       options: !extend
-  #         - !remove "None"
-  #         - "media_player.living_room_sonos"
-  #         - "media_player.kitchen_echo"
+  #   substitutions:
+  #     external_assist_primary_media_player: "media_player.kitchen_2"
   #
   # The runtime logic in this firmware (play_sound script, control_volume
   # script, voice_assistant on_intent_progress / on_tts_end) reads the
   # CURRENT option of this select via `current_option()` and forwards it
   # to Home Assistant media_player actions as the entity_id.
-  # That means each option string MUST be a valid HA media_player
-  # entity_id (e.g. "media_player.living_room_sonos"), not a friendly
-  # name. "None" is only a build-safe fallback for devices without any
-  # external speaker configured.
+  # That option comes from external_assist_primary_media_player and must be a
+  # valid HA media_player entity_id, not a friendly name. media_player.none is only a
+  # build-safe fallback for devices without any external speaker configured.
   - platform: template
     name: External Assist Media Player
     id: external_assist_media_player_select
     icon: "mdi:speaker-wireless"
     entity_category: config
     options:
-      - "None"
-    initial_option: "None"
+      - "${external_assist_primary_media_player}"
+    initial_option: "${external_assist_primary_media_player}"
     optimistic: true
     restore_value: true
+
+sensor:
+  # Internal mirror of the configured external Assist media player's current
+  # HA volume_level attribute. This lets firmware save/restore volume without
+  # HA helper entities, HA scripts, REST calls, or scene snapshots.
+  - platform: homeassistant
+    id: external_assist_selected_media_player_volume
+    entity_id: ${external_assist_primary_media_player}
+    attribute: volume_level
+    internal: true
 
 binary_sensor:
   - platform: gpio
@@ -351,7 +354,7 @@ script:
                 condition:
                   lambda: |-
                     const auto option = id(external_assist_media_player_select).current_option();
-                    return !option.empty() && option != "None";
+                    return !option.empty() && option != "None" && option != "media_player.none";
                 then:
                   # Let the selected Music Assistant player play direct URLs
                   # using the same manual-entry metadata shape as HA DevTools.
@@ -418,7 +421,7 @@ script:
               - switch.is_on: external_assist_speaker_switch
               - lambda: |-
                   const auto option = id(external_assist_media_player_select).current_option();
-                  return !option.empty() && option != "None";
+                  return !option.empty() && option != "None" && option != "media_player.none";
           then:
             - if:
                 condition:
