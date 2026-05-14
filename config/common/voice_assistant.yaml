@@ -15,7 +15,7 @@ substitutions:
   external_listening_snapshot_scene_id: "${node_name}_external_listening_audio_snapshot"
   # Extra time to keep local mirrored external prompts active before HA starts
   # follow-up listening after ask_question/start_conversation prompt playback.
-  external_prompt_mirror_hold_ms: "200"
+  external_prompt_mirror_hold_ms: "700"
   # HA scene id used to restore the selected external media player after the
   # externally initiated ask_question/start_conversation prompt + listen window.
   external_prompt_snapshot_scene_id: "${node_name}_external_prompt_audio_snapshot"
@@ -79,6 +79,16 @@ globals:
     type: std::string
     restore_value: no
     initial_value: '""'
+
+  - id: external_prompt_restore_failed
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: external_listening_restore_failed
+    type: bool
+    restore_value: no
+    initial_value: 'false'
 
 microphone:
   - platform: satellite1
@@ -174,6 +184,12 @@ voice_assistant:
   volume_multiplier: 1
   on_client_connected:
     - lambda: id(init_in_progress) = false;
+    - if:
+        condition:
+          lambda: return id(external_prompt_snapshot_active) || id(external_listening_duck_active);
+        then:
+          - script.execute: restore_external_audio_window
+          - script.wait: restore_external_audio_window
     - micro_wake_word.start:
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
@@ -183,8 +199,6 @@ voice_assistant:
     - lambda: |-
         id(external_prompt_mirror_active) = false;
         id(external_media_player)->set_announcement_finish_hold_ms(0);
-        id(external_prompt_snapshot_active) = false;
-        id(external_prompt_snapshot_entity).clear();
     - script.execute: control_leds
   on_error:
     - if:
@@ -197,16 +211,17 @@ voice_assistant:
           - script.execute: control_leds
     # Reset the low-latency forwarding flag so the next run is clean.
     - lambda: id(external_tts_forwarded) = false;
-    - script.execute: restore_external_prompt_audio
-    - script.wait: restore_external_prompt_audio
     - lambda: |-
         id(external_prompt_mirror_active) = false;
         id(external_media_player)->set_announcement_finish_hold_ms(0);
     - if:
         condition:
-          switch.is_on: external_assist_speaker_switch
+          lambda: return id(external_assist_speaker_switch).state ||
+                         id(external_prompt_snapshot_active) ||
+                         id(external_listening_duck_active);
         then:
-          - script.execute: restore_external_listening_audio
+          - script.execute: restore_external_audio_window
+          - script.wait: restore_external_audio_window
         else:
           - mixer_speaker.apply_ducking:
               id: media_mixing_input
@@ -254,12 +269,12 @@ voice_assistant:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
     - if:
         condition:
-          switch.is_on: external_assist_speaker_switch
+          lambda: return id(external_assist_speaker_switch).state ||
+                         id(external_prompt_snapshot_active) ||
+                         id(external_listening_duck_active);
         then:
-          - script.execute: restore_external_listening_audio
-          - script.wait: restore_external_listening_audio
-          - script.execute: restore_external_prompt_audio
-          - script.wait: restore_external_prompt_audio
+          - script.execute: restore_external_audio_window
+          - script.wait: restore_external_audio_window
     - script.execute: control_leds
   on_intent_progress:
     - if:
@@ -429,9 +444,12 @@ voice_assistant:
           voice_assistant.is_running:
     - if:
         condition:
-          switch.is_on: external_assist_speaker_switch
+          lambda: return id(external_assist_speaker_switch).state ||
+                         id(external_prompt_snapshot_active) ||
+                         id(external_listening_duck_active);
         then:
-          - script.execute: restore_external_listening_audio
+          - script.execute: restore_external_audio_window
+          - script.wait: restore_external_audio_window
         else:
           - mixer_speaker.apply_ducking:
               id: media_mixing_input
@@ -439,8 +457,6 @@ voice_assistant:
               duration: 1.0s
     # Stop the script that would potentially enable the stop word if the response is longer than a second
     - script.stop: activate_stop_word_if_tts_step_is_long
-    - script.execute: restore_external_prompt_audio
-    - script.wait: restore_external_prompt_audio
     - lambda: |-
         id(external_prompt_mirror_active) = false;
         id(external_media_player)->set_announcement_finish_hold_ms(0);
@@ -472,6 +488,17 @@ voice_assistant:
     - script.execute: control_leds
 
 script:
+  - id: restore_external_audio_window
+    mode: restart
+    then:
+      - logger.log:
+          level: DEBUG
+          format: "External audio restore window: restoring listening duck first, prompt snapshot last"
+      - script.execute: restore_external_listening_audio
+      - script.wait: restore_external_listening_audio
+      - script.execute: restore_external_prompt_audio
+      - script.wait: restore_external_prompt_audio
+
   - id: snapshot_external_prompt_audio
     mode: queued
     then:
@@ -488,6 +515,10 @@ script:
             - lambda: |-
                 id(external_prompt_snapshot_entity) = id(external_assist_media_player_select).current_option();
                 id(external_prompt_snapshot_active) = true;
+            - logger.log:
+                level: DEBUG
+                format: "External prompt snapshot armed for %s"
+                args: ['id(external_prompt_snapshot_entity).c_str()']
             - homeassistant.action:
                 action: scene.create
                 data:
@@ -499,6 +530,10 @@ script:
                       level: WARN
                       format: "External prompt scene snapshot failed: %s"
                       args: ['error.c_str()']
+            - logger.log:
+                level: DEBUG
+                format: "External prompt/listening duck: setting %s to 5%%"
+                args: ['id(external_prompt_snapshot_entity).c_str()']
             - homeassistant.action:
                 action: media_player.volume_set
                 data:
@@ -517,12 +552,17 @@ script:
           condition:
             lambda: return id(external_prompt_snapshot_active);
           then:
+            - lambda: id(external_prompt_restore_failed) = false;
             - if:
                 condition:
                   lambda: |-
                     return !id(external_prompt_snapshot_entity).empty() &&
                            id(external_prompt_snapshot_entity) != "None";
                 then:
+                  - logger.log:
+                      level: DEBUG
+                      format: "External prompt snapshot restore: scene.${external_prompt_snapshot_scene_id} for %s"
+                      args: ['id(external_prompt_snapshot_entity).c_str()']
                   - homeassistant.action:
                       action: scene.turn_on
                       data:
@@ -532,9 +572,18 @@ script:
                             level: WARN
                             format: "External prompt scene restore failed: %s"
                             args: ['error.c_str()']
-            - lambda: |-
-                id(external_prompt_snapshot_active) = false;
-                id(external_prompt_snapshot_entity).clear();
+                        - lambda: id(external_prompt_restore_failed) = true;
+            - if:
+                condition:
+                  lambda: return !id(external_prompt_restore_failed);
+                then:
+                  - lambda: |-
+                      id(external_prompt_snapshot_active) = false;
+                      id(external_prompt_snapshot_entity).clear();
+                else:
+                  - logger.log:
+                      level: WARN
+                      format: "External prompt snapshot restore failed; keeping restore state for retry"
 
   - id: duck_external_listening_audio
     mode: queued
@@ -550,6 +599,10 @@ script:
                            !id(external_prompt_snapshot_entity).empty() &&
                            id(external_prompt_snapshot_entity) != "None";
                 then:
+                  - logger.log:
+                      level: DEBUG
+                      format: "External prompt/listening duck: reasserting %s at 5%%"
+                      args: ['id(external_prompt_snapshot_entity).c_str()']
                   - homeassistant.action:
                       action: media_player.volume_set
                       data:
@@ -578,6 +631,10 @@ script:
                               - lambda: |-
                                   id(external_listening_duck_entity) = id(external_assist_media_player_select).current_option();
                                   id(external_listening_duck_active) = true;
+                              - logger.log:
+                                  level: DEBUG
+                                  format: "External listening snapshot armed for %s"
+                                  args: ['id(external_listening_duck_entity).c_str()']
                               - homeassistant.action:
                                   action: scene.create
                                   data:
@@ -589,6 +646,10 @@ script:
                                         level: WARN
                                         format: "External listening scene snapshot failed: %s"
                                         args: ['error.c_str()']
+                        - logger.log:
+                            level: DEBUG
+                            format: "External listening duck: setting %s to 5%%"
+                            args: ['id(external_listening_duck_entity).c_str()']
                         - homeassistant.action:
                             action: media_player.volume_set
                             data:
@@ -606,30 +667,40 @@ script:
       - script.stop: duck_external_listening_audio
       - if:
           condition:
-            switch.is_on: external_assist_speaker_switch
+            lambda: return id(external_listening_duck_active);
           then:
+            - lambda: id(external_listening_restore_failed) = false;
             - if:
                 condition:
-                  lambda: return id(external_listening_duck_active);
+                  lambda: |-
+                    return !id(external_listening_duck_entity).empty() &&
+                           id(external_listening_duck_entity) != "None";
                 then:
-                  - if:
-                      condition:
-                        lambda: |-
-                          return !id(external_listening_duck_entity).empty() &&
-                                 id(external_listening_duck_entity) != "None";
-                      then:
-                        - homeassistant.action:
-                            action: scene.turn_on
-                            data:
-                              entity_id: scene.${external_listening_snapshot_scene_id}
-                            on_error:
-                              - logger.log:
-                                  level: WARN
-                                  format: "External listening scene restore failed; leaving external player at 5%%: %s"
-                                  args: ['error.c_str()']
+                  - logger.log:
+                      level: DEBUG
+                      format: "External listening snapshot restore: scene.${external_listening_snapshot_scene_id} for %s"
+                      args: ['id(external_listening_duck_entity).c_str()']
+                  - homeassistant.action:
+                      action: scene.turn_on
+                      data:
+                        entity_id: scene.${external_listening_snapshot_scene_id}
+                      on_error:
+                        - logger.log:
+                            level: WARN
+                            format: "External listening scene restore failed; leaving external player at 5%%: %s"
+                            args: ['error.c_str()']
+                        - lambda: id(external_listening_restore_failed) = true;
+            - if:
+                condition:
+                  lambda: return !id(external_listening_restore_failed);
+                then:
                   - lambda: |-
                       id(external_listening_duck_active) = false;
                       id(external_listening_duck_entity).clear();
+                else:
+                  - logger.log:
+                      level: WARN
+                      format: "External listening restore failed; keeping restore state for retry"
 
   # Script used activate the stop word if the TTS step is long.
   # Why is this wrapped on a script?

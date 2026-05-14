@@ -24,16 +24,22 @@ icon: mdi:music
 mode: parallel
 max_exceeded: silent
 description: >-
-  Plays music via Music Assistant. Use this tool whenever the user asks to
-  play, shuffle, queue, or stream music — songs, albums, artists, playlists,
-  radio stations, or whole genres. Do NOT use this tool for podcasts or
-  audiobooks.
+  Plays or stops music via Music Assistant. Use this tool whenever the user
+  asks to play, shuffle, queue, stream, stop, or turn off music — songs,
+  albums, artists, playlists, radio stations, or whole genres. Do NOT use
+  this tool for podcasts or audiobooks.
 
-  Required arguments:
+  Command argument:
+    - command: play or stop. If omitted, play is assumed.
+      Use stop for "stop music", "stop playing in the kitchen", or
+      "stop music on G and H".
+
+  Required arguments for command: play:
     - media_type: one of track, album, artist, playlist, radio, genre.
     - media_id: the actual name to play. For track/album/artist/playlist
       this is the title or person; for radio it's the station name; for
       genre it's just the genre word ("house", "lofi", "90s rock").
+      Do not set media_type or media_id for command: stop.
 
   Optional arguments (only set when the user mentions them):
     - artist / album: hints to disambiguate. Skip them otherwise.
@@ -71,6 +77,10 @@ description: >-
     them to Music Assistant players, groups them temporarily, and starts
     playback on the group leader.
 
+    Stop requests on grouped players are partial and defensive: when the
+    user says "stop music on G and H" while G, H, and J are grouped, the
+    script unjoins and stops only G and H, then best-effort keeps J playing.
+
     Resolution order at runtime (defensive — the script validates and
     falls back if your `area` value is bogus or missing):
       1. Validated `area` from the LLM (the script discards values
@@ -89,6 +99,8 @@ description: >-
                                                    -> area: ["bedroom"], media_player: empty
       - "Put on jazz on the Sonos Beam"            -> area: empty, media_player: ["media_player.sonos_beam"]
       - "Play Queen on G, H, and J"                -> area: empty, media_player: ["media_player.g", "media_player.h", "media_player.j"]
+      - "Stop music on G and H"                    -> command: stop, media_player: ["media_player.g", "media_player.h"]
+      - "Stop music"                               -> command: stop, area: ["office"]
       - "Play Adele"                               -> area: ["office"], media_player: empty
 
   How to pick media_type:
@@ -119,9 +131,21 @@ description: >-
   Take It Easy" with media_type track).
 
 fields:
+  command:
+    name: Command
+    selector:
+      select:
+        options:
+          - play
+          - stop
+    description: |
+      Optional, defaults to "play".
+      - "play" — start music via Music Assistant.
+      - "stop" — stop music on the requested room/speaker(s). For grouped
+        players, the script unjoins and stops only the targeted players and
+        best-effort keeps untargeted group members playing.
   media_type:
     name: Media Type
-    required: true
     selector:
       select:
         options:
@@ -132,7 +156,8 @@ fields:
           - radio
           - genre
     description: |
-      Required. The kind of thing being requested. One of:
+      Required when command is "play". Leave empty for command "stop".
+      The kind of thing being requested. One of:
       - "track" — a specific track or `;`-separated list of tracks.
       - "album" — an album or `;`-separated list of albums.
       - "artist" — an artist.
@@ -144,11 +169,11 @@ fields:
         similar tracks indefinitely.
   media_id:
     name: Media ID
-    required: true
     selector:
       text:
     description: |
-      Required. The most specific value, depending on media_type:
+      Required when command is "play". Leave empty for command "stop".
+      The most specific value, depending on media_type:
       - track: single track name or `;`-separated list. If multiple artists
         appear in the result, use "Artist - Song" format. If all songs are
         from one artist, put that artist in `artist` and use plain song names.
@@ -260,7 +285,7 @@ sequence:
   # 1. Resolve targets, cache lookups, build action payload.
   # ---------------------------------------------------------------------------
   - variables:
-      version: "2026-05-13 sat1+sonos standalone grouped"
+      version: "2026-05-14 sat1+sonos standalone grouped+partial-stop"
 
       # Hardcoded behavior. Edit these two values to change defaults:
       #   play_continuously: "Always" | "Use player settings" | "Never"
@@ -273,6 +298,8 @@ sequence:
       play_continuously: Always
       enqueue_default: Replace
 
+      command_raw: "{{ command | default('play', true) | string | lower }}"
+      command_normalized: "{{ 'stop' if command_raw == 'stop' else 'play' }}"
       shuffle_requested: "{{ shuffle | default(false, true) | bool(false) }}"
 
       # Cache MA entity lookups once.
@@ -494,8 +521,13 @@ sequence:
       # HA validates the tool response shape.
       invalid_target:
         response: >-
-          I couldn't figure out which speaker to play that on. Try asking
-          again with the room name, like "play Queen in the bedroom".
+          {%- if command_normalized == 'stop' -%}
+            I couldn't figure out which speaker to stop. Try asking again
+            with the room name, like "stop music in the bedroom".
+          {%- else -%}
+            I couldn't figure out which speaker to play that on. Try asking
+            again with the room name, like "play Queen in the bedroom".
+          {%- endif -%}
   - if:
       - condition: template
         value_template: >-
@@ -505,7 +537,158 @@ sequence:
         response_variable: invalid_target
 
   # ---------------------------------------------------------------------------
-  # 3. Build the play_media payload and the resolved target.
+  # 3. Stop/ungroup branch. Partial stops first split targeted players away
+  #    from any group, then stop only those targets. Keepers are re-joined
+  #    before and after unjoining as a best-effort guard for leader changes.
+  # ---------------------------------------------------------------------------
+  - if:
+      - condition: template
+        value_template: "{{ command_normalized == 'stop' }}"
+    then:
+      - variables:
+          stop_target_players: "{{ playback_players }}"
+          stop_group_data: >-
+            {%- set ns = namespace(groups=[], keys=[]) -%}
+            {%- for player in stop_target_players -%}
+              {%- set raw = state_attr(player, 'group_members') -%}
+              {%- if raw is string -%}
+                {%- set members = [raw] -%}
+              {%- elif raw is iterable -%}
+                {%- set members = raw | list -%}
+              {%- else -%}
+                {%- set members = [player] -%}
+              {%- endif -%}
+              {%- if player not in members -%}
+                {%- set members = members + [player] -%}
+              {%- endif -%}
+              {%- set cleaned = namespace(items=[]) -%}
+              {%- for member in members -%}
+                {%- if member in ma_entities and member not in cleaned.items -%}
+                  {%- set cleaned.items = cleaned.items + [member] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- if not cleaned.items -%}
+                {%- set cleaned.items = [player] -%}
+              {%- endif -%}
+              {%- set key = cleaned.items | sort | join('|') -%}
+              {%- if key not in ns.keys -%}
+                {%- set buckets = namespace(stop=[], keep=[]) -%}
+                {%- for member in cleaned.items -%}
+                  {%- if member in stop_target_players -%}
+                    {%- set buckets.stop = buckets.stop + [member] -%}
+                  {%- else -%}
+                    {%- set buckets.keep = buckets.keep + [member] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set ns.groups = ns.groups + [{'members': cleaned.items, 'stop': buckets.stop, 'keep': buckets.keep}] -%}
+                {%- set ns.keys = ns.keys + [key] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.groups }}
+          stop_keep_players: >-
+            {%- set ns = namespace(players=[]) -%}
+            {%- for group in stop_group_data -%}
+              {%- for player in group.keep -%}
+                {%- if player not in ns.players -%}
+                  {%- set ns.players = ns.players + [player] -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {{ ns.players }}
+          playing_keep_players: "{{ stop_keep_players | select('is_state', 'playing') | list }}"
+          spoken_stop_target: >-
+            {%- set ns = namespace(names=[]) -%}
+            {%- for player in stop_target_players -%}
+              {%- set name = state_attr(player, 'friendly_name') or player -%}
+              {%- if name not in ns.names -%}
+                {%- set ns.names = ns.names + [name] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.names | join(', ') }}
+          spoken_keep_target: >-
+            {%- set ns = namespace(names=[]) -%}
+            {%- for player in stop_keep_players -%}
+              {%- set name = state_attr(player, 'friendly_name') or player -%}
+              {%- if name not in ns.names -%}
+                {%- set ns.names = ns.names + [name] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.names | join(', ') }}
+          stop_reply:
+            response: >-
+              {%- if spoken_keep_target -%}
+                Stopped music on {{ spoken_stop_target }}. {{ spoken_keep_target }} should keep playing.
+              {%- else -%}
+                Stopped music on {{ spoken_stop_target }}.
+              {%- endif -%}
+      - repeat:
+          for_each: "{{ stop_group_data }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: "{{ repeat.item.keep | count > 1 }}"
+              then:
+                - alias: Preserve untargeted group members before unjoin
+                  action: media_player.join
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ repeat.item.keep[0] }}"
+                  data:
+                    group_members: "{{ repeat.item.keep[1:] }}"
+      - alias: Unjoin targeted Music Assistant players
+        action: media_player.unjoin
+        continue_on_error: true
+        target:
+          entity_id: "{{ stop_target_players }}"
+      - repeat:
+          for_each: "{{ stop_group_data }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: "{{ repeat.item.keep | count > 1 }}"
+              then:
+                - alias: Rejoin untargeted group members after unjoin
+                  action: media_player.join
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ repeat.item.keep[0] }}"
+                  data:
+                    group_members: "{{ repeat.item.keep[1:] }}"
+      - alias: Stop only targeted Music Assistant players
+        action: media_player.media_stop
+        continue_on_error: true
+        target:
+          entity_id: "{{ stop_target_players }}"
+      - if:
+          - condition: template
+            value_template: "{{ playing_keep_players | count > 0 }}"
+        then:
+          - alias: Nudge previously playing keepers to continue
+            action: media_player.media_play
+            continue_on_error: true
+            target:
+              entity_id: "{{ playing_keep_players }}"
+      - stop: ""
+        response_variable: stop_reply
+
+  # ---------------------------------------------------------------------------
+  # 4. Validate play media inputs, then build the play_media payload and target.
+  # ---------------------------------------------------------------------------
+  - variables:
+      invalid_media:
+        response: >-
+          Tell me what to play.
+  - if:
+      - condition: template
+        value_template: >-
+          {{ media_type | default('', true) | trim == ''
+             or media_id | default('', true) | trim == '' }}
+    then:
+      - stop: ""
+        response_variable: invalid_media
+
+  # ---------------------------------------------------------------------------
+  # 5. Build the play_media payload and the resolved target.
   # ---------------------------------------------------------------------------
   - variables:
       # Normalize the genre media_id defensively. MA's fuzzy search will
@@ -576,7 +759,7 @@ sequence:
         {{ dict(action_data.items() | rejectattr('1', 'eq', 'NA')) }}
 
   # ---------------------------------------------------------------------------
-  # 4. Group multi-player requests, then fire play_media and shuffle_set.
+  # 6. Group multi-player requests, then fire play_media and shuffle_set.
   # ---------------------------------------------------------------------------
   - if:
       - condition: template
@@ -605,7 +788,7 @@ sequence:
             target: "{{ resolved_target }}"
 
   # ---------------------------------------------------------------------------
-  # 5. Return a friendly response so Assist tells the user what is happening.
+  # 7. Return a friendly response so Assist tells the user what is happening.
   # ---------------------------------------------------------------------------
   - variables:
       spoken_target: >-
