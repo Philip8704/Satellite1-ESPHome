@@ -239,6 +239,8 @@ voice_assistant:
         condition:
           switch.is_on: external_assist_speaker_switch
         then:
+          - script.execute: capture_external_listening_audio
+          - script.wait: capture_external_listening_audio
           - dac_proxy.activate_line_out:
         else:
           - mixer_speaker.apply_ducking:
