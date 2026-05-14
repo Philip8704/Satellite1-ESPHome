@@ -82,6 +82,11 @@ globals:
     restore_value: no
     initial_value: 'false'
 
+  - id: external_listening_restore_final_cleanup
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
 microphone:
   - platform: satellite1
     id: sat1_mics
@@ -205,6 +210,7 @@ voice_assistant:
     - lambda: id(external_tts_forwarded) = false;
     - lambda: |-
         id(external_prompt_mirror_active) = false;
+        id(external_listening_restore_final_cleanup) = false;
         id(external_media_player)->set_announcement_finish_hold_ms(0);
     - if:
         condition:
@@ -226,6 +232,7 @@ voice_assistant:
     - lambda: id(external_tts_forwarded) = false;
     - lambda: |-
         id(external_prompt_mirror_active) = false;
+        id(external_listening_restore_final_cleanup) = false;
         id(external_media_player)->set_announcement_finish_hold_ms(0);
     - if:
         condition:
@@ -431,8 +438,10 @@ voice_assistant:
           lambda: return id(external_assist_speaker_switch).state ||
                          id(external_listening_duck_active);
         then:
+          - lambda: id(external_listening_restore_final_cleanup) = true;
           - script.execute: restore_external_audio_window
           - script.wait: restore_external_audio_window
+          - lambda: id(external_listening_restore_final_cleanup) = false;
         else:
           - mixer_speaker.apply_ducking:
               id: media_mixing_input
@@ -624,10 +633,24 @@ script:
                 condition:
                   lambda: return !id(external_listening_restore_failed);
                 then:
-                  - lambda: |-
-                      id(external_listening_duck_active) = false;
-                      id(external_listening_duck_entity).clear();
-                      id(external_listening_volume_saved) = false;
+                  - if:
+                      condition:
+                        lambda: |-
+                          return id(external_listening_restore_final_cleanup) ||
+                                 (id(voice_assistant_phase) != ${voice_assist_error_phase_id} &&
+                                  id(voice_assistant_phase) != ${voice_assist_replying_phase_id});
+                      then:
+                        - lambda: |-
+                            id(external_listening_duck_active) = false;
+                            id(external_listening_duck_entity).clear();
+                            id(external_listening_volume_saved) = false;
+                        - logger.log:
+                            level: DEBUG
+                            format: "External listening restore state cleared"
+                      else:
+                        - logger.log:
+                            level: DEBUG
+                            format: "External listening restore applied; keeping saved volume through error/response cleanup"
                 else:
                   - logger.log:
                       level: WARN
