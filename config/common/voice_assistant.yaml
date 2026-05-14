@@ -8,6 +8,9 @@ substitutions:
   # different host or port.
   mww_capture_endpoint: http://homeassistant.local:8765/upload
 
+  # External HA media player volume while externally routed prompts/responses
+  # play inside an ask_question/start_conversation window.
+  external_prompt_duck_volume: "0.20"
   # External HA media player volume while the Satellite is actively listening.
   external_listening_duck_volume: "0.05"
   # HA scene id used to snapshot/restore the selected external media player.
@@ -273,8 +276,16 @@ voice_assistant:
                          id(external_prompt_snapshot_active) ||
                          id(external_listening_duck_active);
         then:
-          - script.execute: restore_external_audio_window
-          - script.wait: restore_external_audio_window
+          - if:
+              condition:
+                lambda: return id(external_prompt_snapshot_active);
+              then:
+                - logger.log:
+                    level: DEBUG
+                    format: "External prompt window remains active through thinking; restore delayed until end"
+              else:
+                - script.execute: restore_external_audio_window
+                - script.wait: restore_external_audio_window
     - script.execute: control_leds
   on_intent_progress:
     - if:
@@ -298,6 +309,8 @@ voice_assistant:
                     }
                 - script.execute: snapshot_external_prompt_audio
                 - script.wait: snapshot_external_prompt_audio
+                - script.execute: duck_external_prompt_audio
+                - script.wait: duck_external_prompt_audio
                 - script.execute: restore_external_listening_audio
                 # Route the local media-player mirror to the unused line-out so
                 # HA still sees accurate announcement duration/status without
@@ -369,6 +382,8 @@ voice_assistant:
               }
           - script.execute: snapshot_external_prompt_audio
           - script.wait: snapshot_external_prompt_audio
+          - script.execute: duck_external_prompt_audio
+          - script.wait: duck_external_prompt_audio
           - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
     - if:
@@ -404,6 +419,8 @@ voice_assistant:
               }
           - script.execute: snapshot_external_prompt_audio
           - script.wait: snapshot_external_prompt_audio
+          - script.execute: duck_external_prompt_audio
+          - script.wait: duck_external_prompt_audio
           - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
           - homeassistant.action:
@@ -499,6 +516,31 @@ script:
       - script.execute: restore_external_prompt_audio
       - script.wait: restore_external_prompt_audio
 
+  - id: duck_external_prompt_audio
+    mode: queued
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(external_prompt_snapshot_active) &&
+                     !id(external_prompt_snapshot_entity).empty() &&
+                     id(external_prompt_snapshot_entity) != "None";
+          then:
+            - logger.log:
+                level: DEBUG
+                format: "External prompt/response volume: setting %s to 20%%"
+                args: ['id(external_prompt_snapshot_entity).c_str()']
+            - homeassistant.action:
+                action: media_player.volume_set
+                data:
+                  entity_id: !lambda return id(external_prompt_snapshot_entity);
+                  volume_level: ${external_prompt_duck_volume}
+                on_error:
+                  - logger.log:
+                      level: WARN
+                      format: "External prompt/response volume set failed: %s"
+                      args: ['error.c_str()']
+
   - id: snapshot_external_prompt_audio
     mode: queued
     then:
@@ -529,20 +571,6 @@ script:
                   - logger.log:
                       level: WARN
                       format: "External prompt scene snapshot failed: %s"
-                      args: ['error.c_str()']
-            - logger.log:
-                level: DEBUG
-                format: "External prompt/listening duck: setting %s to 5%%"
-                args: ['id(external_prompt_snapshot_entity).c_str()']
-            - homeassistant.action:
-                action: media_player.volume_set
-                data:
-                  entity_id: !lambda return id(external_prompt_snapshot_entity);
-                  volume_level: ${external_listening_duck_volume}
-                on_error:
-                  - logger.log:
-                      level: WARN
-                      format: "External prompt/listening volume duck failed: %s"
                       args: ['error.c_str()']
 
   - id: restore_external_prompt_audio
