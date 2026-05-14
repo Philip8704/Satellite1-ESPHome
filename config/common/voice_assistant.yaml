@@ -13,8 +13,6 @@ substitutions:
   # HA helper used to store the selected external media player's pre-duck volume.
   # Create this helper in HA, or include home_assistant/satellite1_external_audio_helpers.yaml.
   external_listening_volume_helper: "input_number.${node_name}_external_listening_restore_volume"
-  # Give HA time to commit helper writes before the following volume_set to 5%.
-  external_listening_volume_save_settle: "250ms"
   # Extra guard after the satellite reaches idle before final external restore.
   external_listening_idle_restore_guard: "200ms"
   # Extra time to keep local mirrored external prompts active before HA starts
@@ -523,73 +521,28 @@ script:
                             id(external_listening_volume_saved) = true;
                         - logger.log:
                             level: DEBUG
-                            format: "External listening volume save: %s -> ${external_listening_volume_helper}"
+                            format: "External listening HA script duck: %s -> 5%%"
                             args: ['id(external_listening_duck_entity).c_str()']
                         - homeassistant.action:
-                            action: input_number.set_value
+                            action: script.satellite1_external_listening_duck
                             data:
-                              entity_id: ${external_listening_volume_helper}
-                            data_template:
-                              value: !lambda |-
-                                std::string entity = id(external_listening_duck_entity);
-                                size_t pos = 0;
-                                while ((pos = entity.find("\\", pos)) != std::string::npos) {
-                                  entity.replace(pos, 1, "\\\\");
-                                  pos += 2;
-                                }
-                                pos = 0;
-                                while ((pos = entity.find("'", pos)) != std::string::npos) {
-                                  entity.replace(pos, 1, "\\'");
-                                  pos += 2;
-                                }
-                                return "{{ state_attr('" + entity + "', 'volume_level') | float(${external_listening_duck_volume}) | round(3) }}";
+                              media_player_entity: !lambda return id(external_listening_duck_entity);
+                              restore_volume_helper: "${external_listening_volume_helper}"
+                              duck_volume: "${external_listening_duck_volume}"
                             on_error:
                               - logger.log:
                                   level: WARN
-                                  format: "External listening volume save failed; skipping duck to avoid losing restore volume: %s"
+                                  format: "External listening HA script duck failed; restore volume was not saved: %s"
                                   args: ['error.c_str()']
                               - lambda: |-
                                   id(external_listening_volume_saved) = false;
                                   id(external_listening_duck_active) = false;
                                   id(external_listening_duck_entity).clear();
-                        - if:
-                            condition:
-                              lambda: return id(external_listening_volume_saved);
-                            then:
-                              - logger.log:
-                                  level: DEBUG
-                                  format: "External listening volume save settle: waiting ${external_listening_volume_save_settle} before duck"
-                              - delay: ${external_listening_volume_save_settle}
-                  - logger.log:
-                      level: DEBUG
-                      format: "External listening duck requested for %s"
-                      args: ['id(external_listening_duck_entity).c_str()']
-                  - if:
-                      condition:
-                        lambda: |-
-                          return id(external_listening_duck_active) &&
-                                 id(external_listening_volume_saved) &&
-                                 !id(external_listening_duck_entity).empty() &&
-                                 id(external_listening_duck_entity) != "None";
-                      then:
+                      else:
                         - logger.log:
                             level: DEBUG
-                            format: "External listening duck: setting %s to 5%%"
+                            format: "External listening duck already active for %s"
                             args: ['id(external_listening_duck_entity).c_str()']
-                        - homeassistant.action:
-                            action: media_player.volume_set
-                            data:
-                              entity_id: !lambda return id(external_listening_duck_entity);
-                              volume_level: ${external_listening_duck_volume}
-                            on_error:
-                              - logger.log:
-                                  level: WARN
-                                  format: "External listening volume duck failed: %s"
-                                  args: ['error.c_str()']
-                              - lambda: |-
-                                  id(external_listening_duck_active) = false;
-                                  id(external_listening_volume_saved) = false;
-                                  id(external_listening_duck_entity).clear();
 
   - id: restore_external_listening_audio
     mode: restart
@@ -609,18 +562,18 @@ script:
                 then:
                   - logger.log:
                       level: DEBUG
-                      format: "External listening volume restore: ${external_listening_volume_helper} -> %s"
+                      format: "External listening HA script restore: ${external_listening_volume_helper} -> %s"
                       args: ['id(external_listening_duck_entity).c_str()']
                   - homeassistant.action:
-                      action: media_player.volume_set
+                      action: script.satellite1_external_listening_restore
                       data:
-                        entity_id: !lambda return id(external_listening_duck_entity);
-                      data_template:
-                        volume_level: "{{ states('${external_listening_volume_helper}') | float(${external_listening_duck_volume}) | round(3) }}"
+                        media_player_entity: !lambda return id(external_listening_duck_entity);
+                        restore_volume_helper: "${external_listening_volume_helper}"
+                        fallback_volume: "${external_listening_duck_volume}"
                       on_error:
                         - logger.log:
                             level: WARN
-                            format: "External listening helper volume restore failed; leaving external player at the ducked volume: %s"
+                            format: "External listening HA script restore failed; keeping restore state for retry: %s"
                             args: ['error.c_str()']
                         - lambda: id(external_listening_restore_failed) = true;
                   - if:
