@@ -8,20 +8,14 @@ substitutions:
   # different host or port.
   mww_capture_endpoint: http://homeassistant.local:8765/upload
 
-  # External HA media player volume while externally routed prompts/responses
-  # play inside an ask_question/start_conversation window.
-  external_prompt_duck_volume: "0.20"
   # External HA media player volume while the Satellite is actively listening.
   external_listening_duck_volume: "0.05"
-  # HA scene id used to snapshot/restore the selected external media player.
-  # Override per device if ${node_name} is not a HA-safe slug or you run multiple satellites.
-  external_listening_snapshot_scene_id: "${node_name}_external_listening_audio_snapshot"
+  # HA helper used to store the selected external media player's pre-duck volume.
+  # Create this helper in HA, or include home_assistant/satellite1_external_audio_helpers.yaml.
+  external_listening_volume_helper: "input_number.${node_name}_external_listening_restore_volume"
   # Extra time to keep local mirrored external prompts active before HA starts
   # follow-up listening after ask_question/start_conversation prompt playback.
   external_prompt_mirror_hold_ms: "700"
-  # HA scene id used to restore the selected external media player after the
-  # externally initiated ask_question/start_conversation prompt + listen window.
-  external_prompt_snapshot_scene_id: "${node_name}_external_prompt_audio_snapshot"
 
   # Phases of the Voice Assistant
   # The voice assistant is ready to be triggered by a wake word
@@ -68,22 +62,12 @@ globals:
     restore_value: no
     initial_value: '""'
 
+  - id: external_listening_volume_saved
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
   - id: external_prompt_mirror_active
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-
-  - id: external_prompt_snapshot_active
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-
-  - id: external_prompt_snapshot_entity
-    type: std::string
-    restore_value: no
-    initial_value: '""'
-
-  - id: external_prompt_restore_failed
     type: bool
     restore_value: no
     initial_value: 'false'
@@ -189,7 +173,7 @@ voice_assistant:
     - lambda: id(init_in_progress) = false;
     - if:
         condition:
-          lambda: return id(external_prompt_snapshot_active) || id(external_listening_duck_active);
+          lambda: return id(external_listening_duck_active);
         then:
           - script.execute: restore_external_audio_window
           - script.wait: restore_external_audio_window
@@ -220,7 +204,6 @@ voice_assistant:
     - if:
         condition:
           lambda: return id(external_assist_speaker_switch).state ||
-                         id(external_prompt_snapshot_active) ||
                          id(external_listening_duck_active);
         then:
           - script.execute: restore_external_audio_window
@@ -273,19 +256,10 @@ voice_assistant:
     - if:
         condition:
           lambda: return id(external_assist_speaker_switch).state ||
-                         id(external_prompt_snapshot_active) ||
                          id(external_listening_duck_active);
         then:
-          - if:
-              condition:
-                lambda: return id(external_prompt_snapshot_active);
-              then:
-                - logger.log:
-                    level: DEBUG
-                    format: "External prompt window remains active through thinking; restore delayed until end"
-              else:
-                - script.execute: restore_external_audio_window
-                - script.wait: restore_external_audio_window
+          - script.execute: restore_external_audio_window
+          - script.wait: restore_external_audio_window
     - script.execute: control_leds
   on_intent_progress:
     - if:
@@ -307,10 +281,6 @@ voice_assistant:
                       id(external_prompt_mirror_active) = true;
                       id(external_media_player)->set_announcement_finish_hold_ms(${external_prompt_mirror_hold_ms});
                     }
-                - script.execute: snapshot_external_prompt_audio
-                - script.wait: snapshot_external_prompt_audio
-                - script.execute: duck_external_prompt_audio
-                - script.wait: duck_external_prompt_audio
                 - script.execute: restore_external_listening_audio
                 # Route the local media-player mirror to the unused line-out so
                 # HA still sees accurate announcement duration/status without
@@ -329,8 +299,8 @@ voice_assistant:
                           action: media_player.play_media
                           data:
                             entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                            announce: true
                           data_template:
-                            announce: "{{ true }}"
                             media: !lambda |-
                               std::string url = x;
                               std::string entity = id(external_assist_media_player_select).current_option();
@@ -349,7 +319,7 @@ voice_assistant:
                               };
                               url = escape(url);
                               entity = escape(entity);
-                              return "{{ {'media_content_id': '" + url + "', 'media_content_type': '', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
+                              return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
                           on_error:
                             - logger.log:
                                 level: WARN
@@ -380,10 +350,6 @@ voice_assistant:
                 id(external_prompt_mirror_active) = true;
                 id(external_media_player)->set_announcement_finish_hold_ms(${external_prompt_mirror_hold_ms});
               }
-          - script.execute: snapshot_external_prompt_audio
-          - script.wait: snapshot_external_prompt_audio
-          - script.execute: duck_external_prompt_audio
-          - script.wait: duck_external_prompt_audio
           - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
     - if:
@@ -417,18 +383,14 @@ voice_assistant:
                 id(external_prompt_mirror_active) = true;
                 id(external_media_player)->set_announcement_finish_hold_ms(${external_prompt_mirror_hold_ms});
               }
-          - script.execute: snapshot_external_prompt_audio
-          - script.wait: snapshot_external_prompt_audio
-          - script.execute: duck_external_prompt_audio
-          - script.wait: duck_external_prompt_audio
           - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
           - homeassistant.action:
               action: media_player.play_media
               data:
                 entity_id: !lambda return id(external_assist_media_player_select).current_option();
+                announce: true
               data_template:
-                announce: "{{ true }}"
                 media: !lambda |-
                   std::string url = x;
                   std::string entity = id(external_assist_media_player_select).current_option();
@@ -447,7 +409,7 @@ voice_assistant:
                   };
                   url = escape(url);
                   entity = escape(entity);
-                  return "{{ {'media_content_id': '" + url + "', 'media_content_type': '', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
+                  return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
               on_error:
                 - logger.log:
                     level: WARN
@@ -462,7 +424,6 @@ voice_assistant:
     - if:
         condition:
           lambda: return id(external_assist_speaker_switch).state ||
-                         id(external_prompt_snapshot_active) ||
                          id(external_listening_duck_active);
         then:
           - script.execute: restore_external_audio_window
@@ -506,112 +467,13 @@ voice_assistant:
 
 script:
   - id: restore_external_audio_window
-    mode: restart
+    mode: queued
     then:
       - logger.log:
           level: DEBUG
-          format: "External audio restore window: restoring listening duck first, prompt snapshot last"
+          format: "External audio restore window: restoring listening duck"
       - script.execute: restore_external_listening_audio
       - script.wait: restore_external_listening_audio
-      - script.execute: restore_external_prompt_audio
-      - script.wait: restore_external_prompt_audio
-
-  - id: duck_external_prompt_audio
-    mode: queued
-    then:
-      - if:
-          condition:
-            lambda: |-
-              return id(external_prompt_snapshot_active) &&
-                     !id(external_prompt_snapshot_entity).empty() &&
-                     id(external_prompt_snapshot_entity) != "None";
-          then:
-            - logger.log:
-                level: DEBUG
-                format: "External prompt/response volume: setting %s to 20%%"
-                args: ['id(external_prompt_snapshot_entity).c_str()']
-            - homeassistant.action:
-                action: media_player.volume_set
-                data:
-                  entity_id: !lambda return id(external_prompt_snapshot_entity);
-                  volume_level: ${external_prompt_duck_volume}
-                on_error:
-                  - logger.log:
-                      level: WARN
-                      format: "External prompt/response volume set failed: %s"
-                      args: ['error.c_str()']
-
-  - id: snapshot_external_prompt_audio
-    mode: queued
-    then:
-      - if:
-          condition:
-            and:
-              - switch.is_on: external_assist_speaker_switch
-              - lambda: return id(external_prompt_mirror_active);
-              - lambda: return !id(external_prompt_snapshot_active);
-              - lambda: |-
-                  const auto option = id(external_assist_media_player_select).current_option();
-                  return !option.empty() && option != "None";
-          then:
-            - lambda: |-
-                id(external_prompt_snapshot_entity) = id(external_assist_media_player_select).current_option();
-                id(external_prompt_snapshot_active) = true;
-            - logger.log:
-                level: DEBUG
-                format: "External prompt snapshot armed for %s"
-                args: ['id(external_prompt_snapshot_entity).c_str()']
-            - homeassistant.action:
-                action: scene.create
-                data:
-                  scene_id: ${external_prompt_snapshot_scene_id}
-                data_template:
-                  snapshot_entities: !lambda return id(external_prompt_snapshot_entity);
-                on_error:
-                  - logger.log:
-                      level: WARN
-                      format: "External prompt scene snapshot failed: %s"
-                      args: ['error.c_str()']
-
-  - id: restore_external_prompt_audio
-    mode: restart
-    then:
-      - if:
-          condition:
-            lambda: return id(external_prompt_snapshot_active);
-          then:
-            - lambda: id(external_prompt_restore_failed) = false;
-            - if:
-                condition:
-                  lambda: |-
-                    return !id(external_prompt_snapshot_entity).empty() &&
-                           id(external_prompt_snapshot_entity) != "None";
-                then:
-                  - logger.log:
-                      level: DEBUG
-                      format: "External prompt snapshot restore: scene.${external_prompt_snapshot_scene_id} for %s"
-                      args: ['id(external_prompt_snapshot_entity).c_str()']
-                  - homeassistant.action:
-                      action: scene.turn_on
-                      data:
-                        entity_id: scene.${external_prompt_snapshot_scene_id}
-                      on_error:
-                        - logger.log:
-                            level: WARN
-                            format: "External prompt scene restore failed: %s"
-                            args: ['error.c_str()']
-                        - lambda: id(external_prompt_restore_failed) = true;
-            - if:
-                condition:
-                  lambda: return !id(external_prompt_restore_failed);
-                then:
-                  - lambda: |-
-                      id(external_prompt_snapshot_active) = false;
-                      id(external_prompt_snapshot_entity).clear();
-                else:
-                  - logger.log:
-                      level: WARN
-                      format: "External prompt snapshot restore failed; keeping restore state for retry"
 
   - id: duck_external_listening_audio
     mode: queued
@@ -623,57 +485,64 @@ script:
             - if:
                 condition:
                   lambda: |-
-                    return id(external_prompt_snapshot_active) &&
-                           !id(external_prompt_snapshot_entity).empty() &&
-                           id(external_prompt_snapshot_entity) != "None";
+                    if (id(external_listening_duck_active)) {
+                      return !id(external_listening_duck_entity).empty() &&
+                             id(external_listening_duck_entity) != "None";
+                    }
+                    const auto option = id(external_assist_media_player_select).current_option();
+                    return !option.empty() && option != "None";
                 then:
+                  - if:
+                      condition:
+                        lambda: return !id(external_listening_duck_active);
+                      then:
+                        - lambda: |-
+                            id(external_listening_duck_entity) = id(external_assist_media_player_select).current_option();
+                            id(external_listening_duck_active) = true;
+                            id(external_listening_volume_saved) = true;
+                        - logger.log:
+                            level: DEBUG
+                            format: "External listening volume save: %s -> ${external_listening_volume_helper}"
+                            args: ['id(external_listening_duck_entity).c_str()']
+                        - homeassistant.action:
+                            action: input_number.set_value
+                            data:
+                              entity_id: ${external_listening_volume_helper}
+                            data_template:
+                              value: !lambda |-
+                                std::string entity = id(external_listening_duck_entity);
+                                size_t pos = 0;
+                                while ((pos = entity.find("\\", pos)) != std::string::npos) {
+                                  entity.replace(pos, 1, "\\\\");
+                                  pos += 2;
+                                }
+                                pos = 0;
+                                while ((pos = entity.find("'", pos)) != std::string::npos) {
+                                  entity.replace(pos, 1, "\\'");
+                                  pos += 2;
+                                }
+                                return "{{ state_attr('" + entity + "', 'volume_level') | float(${external_listening_duck_volume}) | round(3) }}";
+                            on_error:
+                              - logger.log:
+                                  level: WARN
+                                  format: "External listening volume save failed; skipping duck to avoid losing restore volume: %s"
+                                  args: ['error.c_str()']
+                              - lambda: |-
+                                  id(external_listening_volume_saved) = false;
+                                  id(external_listening_duck_active) = false;
+                                  id(external_listening_duck_entity).clear();
                   - logger.log:
                       level: DEBUG
-                      format: "External prompt/listening duck: reasserting %s at 5%%"
-                      args: ['id(external_prompt_snapshot_entity).c_str()']
-                  - homeassistant.action:
-                      action: media_player.volume_set
-                      data:
-                        entity_id: !lambda return id(external_prompt_snapshot_entity);
-                        volume_level: ${external_listening_duck_volume}
-                      on_error:
-                        - logger.log:
-                            level: WARN
-                            format: "External prompt/listening volume duck failed: %s"
-                            args: ['error.c_str()']
-                else:
+                      format: "External listening duck requested for %s"
+                      args: ['id(external_listening_duck_entity).c_str()']
                   - if:
                       condition:
                         lambda: |-
-                          if (id(external_listening_duck_active)) {
-                            return !id(external_listening_duck_entity).empty() &&
-                                   id(external_listening_duck_entity) != "None";
-                          }
-                          const auto option = id(external_assist_media_player_select).current_option();
-                          return !option.empty() && option != "None";
+                          return id(external_listening_duck_active) &&
+                                 id(external_listening_volume_saved) &&
+                                 !id(external_listening_duck_entity).empty() &&
+                                 id(external_listening_duck_entity) != "None";
                       then:
-                        - if:
-                            condition:
-                              lambda: return !id(external_listening_duck_active);
-                            then:
-                              - lambda: |-
-                                  id(external_listening_duck_entity) = id(external_assist_media_player_select).current_option();
-                                  id(external_listening_duck_active) = true;
-                              - logger.log:
-                                  level: DEBUG
-                                  format: "External listening snapshot armed for %s"
-                                  args: ['id(external_listening_duck_entity).c_str()']
-                              - homeassistant.action:
-                                  action: scene.create
-                                  data:
-                                    scene_id: ${external_listening_snapshot_scene_id}
-                                  data_template:
-                                    snapshot_entities: !lambda return id(external_listening_duck_entity);
-                                  on_error:
-                                    - logger.log:
-                                        level: WARN
-                                        format: "External listening scene snapshot failed: %s"
-                                        args: ['error.c_str()']
                         - logger.log:
                             level: DEBUG
                             format: "External listening duck: setting %s to 5%%"
@@ -688,6 +557,10 @@ script:
                                   level: WARN
                                   format: "External listening volume duck failed: %s"
                                   args: ['error.c_str()']
+                              - lambda: |-
+                                  id(external_listening_duck_active) = false;
+                                  id(external_listening_volume_saved) = false;
+                                  id(external_listening_duck_entity).clear();
 
   - id: restore_external_listening_audio
     mode: restart
@@ -702,22 +575,30 @@ script:
                 condition:
                   lambda: |-
                     return !id(external_listening_duck_entity).empty() &&
-                           id(external_listening_duck_entity) != "None";
+                           id(external_listening_duck_entity) != "None" &&
+                           id(external_listening_volume_saved);
                 then:
                   - logger.log:
                       level: DEBUG
-                      format: "External listening snapshot restore: scene.${external_listening_snapshot_scene_id} for %s"
+                      format: "External listening volume restore: ${external_listening_volume_helper} -> %s"
                       args: ['id(external_listening_duck_entity).c_str()']
                   - homeassistant.action:
-                      action: scene.turn_on
+                      action: media_player.volume_set
                       data:
-                        entity_id: scene.${external_listening_snapshot_scene_id}
+                        entity_id: !lambda return id(external_listening_duck_entity);
+                      data_template:
+                        volume_level: "{{ states('${external_listening_volume_helper}') | float(${external_listening_duck_volume}) | round(3) }}"
                       on_error:
                         - logger.log:
                             level: WARN
-                            format: "External listening scene restore failed; leaving external player at 5%%: %s"
+                            format: "External listening helper volume restore failed; leaving external player at the ducked volume: %s"
                             args: ['error.c_str()']
                         - lambda: id(external_listening_restore_failed) = true;
+                else:
+                  - logger.log:
+                      level: WARN
+                      format: "External listening restore skipped; no saved helper volume for %s"
+                      args: ['id(external_listening_duck_entity).c_str()']
             - if:
                 condition:
                   lambda: return !id(external_listening_restore_failed);
@@ -725,6 +606,7 @@ script:
                   - lambda: |-
                       id(external_listening_duck_active) = false;
                       id(external_listening_duck_entity).clear();
+                      id(external_listening_volume_saved) = false;
                 else:
                   - logger.log:
                       level: WARN
