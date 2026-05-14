@@ -148,11 +148,6 @@ micro_wake_word:
                           else:
                             - if:
                                 condition:
-                                  switch.is_on: external_assist_speaker_switch
-                                then:
-                                  - script.execute: duck_external_listening_audio
-                            - if:
-                                condition:
                                   and:
                                     - switch.is_on: wake_sound
                                     - switch.is_off: external_assist_speaker_switch
@@ -238,7 +233,7 @@ voice_assistant:
         condition:
           switch.is_on: external_assist_speaker_switch
         then:
-          - script.execute: duck_external_listening_audio
+          - dac_proxy.activate_line_out:
         else:
           - mixer_speaker.apply_ducking:
               id: media_mixing_input
@@ -270,8 +265,10 @@ voice_assistant:
           lambda: return id(external_assist_speaker_switch).state ||
                          id(external_listening_duck_active);
         then:
+          - lambda: id(external_listening_restore_final_cleanup) = true;
           - script.execute: restore_external_audio_window
           - script.wait: restore_external_audio_window
+          - lambda: id(external_listening_restore_final_cleanup) = false;
     - script.execute: control_leds
   on_intent_progress:
     - if:
