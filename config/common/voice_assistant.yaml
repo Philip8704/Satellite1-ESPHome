@@ -15,9 +15,8 @@ substitutions:
   external_listening_volume_helper: "input_number.${node_name}_external_listening_restore_volume"
   # Give HA time to commit helper writes before the following volume_set to 5%.
   external_listening_volume_save_settle: "250ms"
-  # Keep restore state briefly after issuing restore so immediate error cleanup
-  # can retry instead of clearing state while HA is still applying volume_set.
-  external_listening_restore_retry_window: "1000ms"
+  # Extra guard after the satellite reaches idle before final external restore.
+  external_listening_idle_restore_guard: "200ms"
   # Extra time to keep local mirrored external prompts active before HA starts
   # follow-up listening after ask_question/start_conversation prompt playback.
   external_prompt_mirror_hold_ms: "700"
@@ -217,8 +216,9 @@ voice_assistant:
           lambda: return id(external_assist_speaker_switch).state ||
                          id(external_listening_duck_active);
         then:
-          - script.execute: restore_external_audio_window
-          - script.wait: restore_external_audio_window
+          - logger.log:
+              level: DEBUG
+              format: "External listening restore deferred until satellite idle after error/abort"
         else:
           - mixer_speaker.apply_ducking:
               id: media_mixing_input
@@ -435,14 +435,8 @@ voice_assistant:
           voice_assistant.is_running:
     - if:
         condition:
-          lambda: return id(external_assist_speaker_switch).state ||
-                         id(external_listening_duck_active);
+          lambda: return !id(external_assist_speaker_switch).state;
         then:
-          - lambda: id(external_listening_restore_final_cleanup) = true;
-          - script.execute: restore_external_audio_window
-          - script.wait: restore_external_audio_window
-          - lambda: id(external_listening_restore_final_cleanup) = false;
-        else:
           - mixer_speaker.apply_ducking:
               id: media_mixing_input
               decibel_reduction: 0
@@ -467,6 +461,22 @@ voice_assistant:
     # Reset the voice assistant phase id and reset the LED animations.
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
+    - if:
+        condition:
+          lambda: return id(external_assist_speaker_switch).state ||
+                         id(external_listening_duck_active);
+        then:
+          - wait_until:
+              not:
+                media_player.is_announcing:
+          - delay: ${external_listening_idle_restore_guard}
+          - logger.log:
+              level: DEBUG
+              format: "External listening idle-bound final restore"
+          - lambda: id(external_listening_restore_final_cleanup) = true;
+          - script.execute: restore_external_audio_window
+          - script.wait: restore_external_audio_window
+          - lambda: id(external_listening_restore_final_cleanup) = false;
 
   on_timer_finished:
     - switch.turn_on: timer_ringing
@@ -622,8 +632,7 @@ script:
                       then:
                         - logger.log:
                             level: DEBUG
-                            format: "External listening restore retry window: keeping state for ${external_listening_restore_retry_window}"
-                        - delay: ${external_listening_restore_retry_window}
+                            format: "External listening restore applied; saved state remains until satellite idle"
                 else:
                   - logger.log:
                       level: WARN
@@ -635,10 +644,7 @@ script:
                 then:
                   - if:
                       condition:
-                        lambda: |-
-                          return id(external_listening_restore_final_cleanup) ||
-                                 (id(voice_assistant_phase) != ${voice_assist_error_phase_id} &&
-                                  id(voice_assistant_phase) != ${voice_assist_replying_phase_id});
+                        lambda: return id(external_listening_restore_final_cleanup);
                       then:
                         - lambda: |-
                             id(external_listening_duck_active) = false;
