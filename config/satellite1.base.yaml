@@ -14,7 +14,7 @@ substitutions:
 
   esp32_fw_version: dev
   xmos_fw_version: "v1.0.3"
-  build_check_phrase: "SAT1_BUILD_CHECK_HELPER_VOLUME_RESTORE_2026_05_14"
+  build_check_phrase: "SAT1_BUILD_CHECK_HELPER_VOLUME_RESTORE_RETRY_2026_05_14"
 
 globals:
   # Global initialisation variable. Initialized to true and set to false once everything is connected. Only used to have a smooth "plugging" experience

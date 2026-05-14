@@ -13,6 +13,11 @@ substitutions:
   # HA helper used to store the selected external media player's pre-duck volume.
   # Create this helper in HA, or include home_assistant/satellite1_external_audio_helpers.yaml.
   external_listening_volume_helper: "input_number.${node_name}_external_listening_restore_volume"
+  # Give HA time to commit helper writes before the following volume_set to 5%.
+  external_listening_volume_save_settle: "250ms"
+  # Keep restore state briefly after issuing restore so immediate error cleanup
+  # can retry instead of clearing state while HA is still applying volume_set.
+  external_listening_restore_retry_window: "1000ms"
   # Extra time to keep local mirrored external prompts active before HA starts
   # follow-up listening after ask_question/start_conversation prompt playback.
   external_prompt_mirror_hold_ms: "700"
@@ -531,6 +536,14 @@ script:
                                   id(external_listening_volume_saved) = false;
                                   id(external_listening_duck_active) = false;
                                   id(external_listening_duck_entity).clear();
+                        - if:
+                            condition:
+                              lambda: return id(external_listening_volume_saved);
+                            then:
+                              - logger.log:
+                                  level: DEBUG
+                                  format: "External listening volume save settle: waiting ${external_listening_volume_save_settle} before duck"
+                              - delay: ${external_listening_volume_save_settle}
                   - logger.log:
                       level: DEBUG
                       format: "External listening duck requested for %s"
@@ -594,6 +607,14 @@ script:
                             format: "External listening helper volume restore failed; leaving external player at the ducked volume: %s"
                             args: ['error.c_str()']
                         - lambda: id(external_listening_restore_failed) = true;
+                  - if:
+                      condition:
+                        lambda: return !id(external_listening_restore_failed);
+                      then:
+                        - logger.log:
+                            level: DEBUG
+                            format: "External listening restore retry window: keeping state for ${external_listening_restore_retry_window}"
+                        - delay: ${external_listening_restore_retry_window}
                 else:
                   - logger.log:
                       level: WARN
