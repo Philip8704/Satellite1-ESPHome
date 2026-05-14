@@ -607,8 +607,7 @@ script:
                       on_error:
                         - logger.log:
                             level: WARN
-                            format: "External listening REST capture request failed: %s"
-                            args: ['error.c_str()']
+                            format: "External listening REST capture request failed"
                         - script.execute: clear_external_listening_audio_state
 
   - id: duck_external_listening_audio
