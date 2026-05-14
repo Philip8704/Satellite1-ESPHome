@@ -10,9 +10,11 @@ substitutions:
 
   # External HA media player volume while the Satellite is actively listening.
   external_listening_duck_volume: "0.05"
-  # HA helper used to store the selected external media player's pre-duck volume.
-  # Create this helper in HA, or include home_assistant/satellite1_external_audio_helpers.yaml.
-  external_listening_volume_helper: "input_number.${node_name}_external_listening_restore_volume"
+  # Home Assistant REST API used to read the selected external media player's
+  # current volume into firmware before listening ducking starts.
+  ha_api_base_url: "http://homeassistant.local:8123"
+  # secrets.yaml value must include the prefix, e.g. "Bearer eyJ..."
+  ha_api_bearer_token: !secret ha_api_bearer_token
   # Extra guard after the satellite reaches idle before final external restore.
   external_listening_idle_restore_guard: "200ms"
   # Extra time to keep local mirrored external prompts active before HA starts
@@ -63,6 +65,11 @@ globals:
     type: std::string
     restore_value: no
     initial_value: '""'
+
+  - id: external_listening_restore_volume
+    type: float
+    restore_value: no
+    initial_value: '0.0'
 
   - id: external_listening_volume_saved
     type: bool
@@ -156,6 +163,12 @@ micro_wake_word:
                                       sound_file: !lambda return id(wake_word_triggered_sound);
                                       sound_file_url: "${external_sound_base}/wake_word_triggered.flac"
                                   - delay: 300ms
+                            - if:
+                                condition:
+                                  switch.is_on: external_assist_speaker_switch
+                                then:
+                                  - script.execute: capture_external_listening_audio
+                                  - script.wait: capture_external_listening_audio
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
 
@@ -288,6 +301,13 @@ voice_assistant:
                       id(external_prompt_mirror_active) = true;
                       id(external_media_player)->set_announcement_finish_hold_ms(${external_prompt_mirror_hold_ms});
                     }
+                - if:
+                    condition:
+                      lambda: return id(external_prompt_mirror_active) &&
+                                     !id(external_listening_volume_saved);
+                    then:
+                      - script.execute: capture_external_listening_audio
+                      - script.wait: capture_external_listening_audio
                 - script.execute: restore_external_listening_audio
                 # Route the local media-player mirror to the unused line-out so
                 # HA still sees accurate announcement duration/status without
@@ -357,6 +377,13 @@ voice_assistant:
                 id(external_prompt_mirror_active) = true;
                 id(external_media_player)->set_announcement_finish_hold_ms(${external_prompt_mirror_hold_ms});
               }
+          - if:
+              condition:
+                lambda: return id(external_prompt_mirror_active) &&
+                               !id(external_listening_volume_saved);
+              then:
+                - script.execute: capture_external_listening_audio
+                - script.wait: capture_external_listening_audio
           - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
     - if:
@@ -390,6 +417,13 @@ voice_assistant:
                 id(external_prompt_mirror_active) = true;
                 id(external_media_player)->set_announcement_finish_hold_ms(${external_prompt_mirror_hold_ms});
               }
+          - if:
+              condition:
+                lambda: return id(external_prompt_mirror_active) &&
+                               !id(external_listening_volume_saved);
+              then:
+                - script.execute: capture_external_listening_audio
+                - script.wait: capture_external_listening_audio
           - script.execute: restore_external_listening_audio
           - dac_proxy.activate_line_out:
           - homeassistant.action:
@@ -494,6 +528,89 @@ script:
       - script.execute: restore_external_listening_audio
       - script.wait: restore_external_listening_audio
 
+  - id: clear_external_listening_audio_state
+    mode: restart
+    then:
+      - lambda: |-
+          id(external_listening_duck_active) = false;
+          id(external_listening_duck_entity).clear();
+          id(external_listening_restore_volume) = 0.0f;
+          id(external_listening_volume_saved) = false;
+          id(external_listening_restore_failed) = false;
+
+  - id: capture_external_listening_audio
+    mode: restart
+    then:
+      - if:
+          condition:
+            and:
+              - switch.is_on: external_assist_speaker_switch
+              - lambda: return !id(external_listening_volume_saved) &&
+                               !id(external_listening_duck_active);
+          then:
+            - if:
+                condition:
+                  lambda: |-
+                    const auto option = id(external_assist_media_player_select).current_option();
+                    return !option.empty() && option != "None";
+                then:
+                  - lambda: |-
+                      id(external_listening_duck_entity) = id(external_assist_media_player_select).current_option();
+                      id(external_listening_restore_failed) = false;
+                  - logger.log:
+                      level: DEBUG
+                      format: "External listening REST volume capture: %s"
+                      args: ['id(external_listening_duck_entity).c_str()']
+                  - http_request.get:
+                      url: !lambda |-
+                        return std::string("${ha_api_base_url}/api/states/") + id(external_listening_duck_entity);
+                      request_headers:
+                        Authorization: "${ha_api_bearer_token}"
+                        Accept: "application/json"
+                      capture_response: true
+                      on_response:
+                        then:
+                          - if:
+                              condition:
+                                lambda: return response->status_code == 200;
+                              then:
+                                - lambda: |-
+                                    bool parsed = json::parse_json(body, [](JsonObject root) -> bool {
+                                      if (root["attributes"]["volume_level"].isNull()) {
+                                        ESP_LOGW("main", "External listening REST capture missing volume_level for %s",
+                                                 id(external_listening_duck_entity).c_str());
+                                        return false;
+                                      }
+                                      float volume = root["attributes"]["volume_level"].as<float>();
+                                      if (volume < 0.0f) {
+                                        volume = 0.0f;
+                                      } else if (volume > 1.0f) {
+                                        volume = 1.0f;
+                                      }
+                                      id(external_listening_restore_volume) = volume;
+                                      id(external_listening_volume_saved) = true;
+                                      ESP_LOGD("main", "External listening REST volume captured: %s -> %.3f",
+                                               id(external_listening_duck_entity).c_str(), volume);
+                                      return true;
+                                    });
+                                    if (!parsed) {
+                                      id(external_listening_duck_entity).clear();
+                                      id(external_listening_restore_volume) = 0.0f;
+                                      id(external_listening_volume_saved) = false;
+                                    }
+                              else:
+                                - logger.log:
+                                    level: WARN
+                                    format: "External listening REST capture failed with HTTP %d: %s"
+                                    args: ['response->status_code', 'body.c_str()']
+                                - script.execute: clear_external_listening_audio_state
+                      on_error:
+                        - logger.log:
+                            level: WARN
+                            format: "External listening REST capture request failed: %s"
+                            args: ['error.c_str()']
+                        - script.execute: clear_external_listening_audio_state
+
   - id: duck_external_listening_audio
     mode: queued
     then:
@@ -504,45 +621,53 @@ script:
             - if:
                 condition:
                   lambda: |-
-                    if (id(external_listening_duck_active)) {
-                      return !id(external_listening_duck_entity).empty() &&
-                             id(external_listening_duck_entity) != "None";
-                    }
                     const auto option = id(external_assist_media_player_select).current_option();
-                    return !option.empty() && option != "None";
+                    if (option.empty() || option == "None") {
+                      return false;
+                    }
+                    if (id(external_listening_volume_saved) &&
+                        !id(external_listening_duck_active) &&
+                        id(external_listening_duck_entity) != option) {
+                      ESP_LOGD("main", "External listening selected player changed before duck; recapturing");
+                      id(external_listening_duck_entity).clear();
+                      id(external_listening_restore_volume) = 0.0f;
+                      id(external_listening_volume_saved) = false;
+                      id(external_listening_restore_failed) = false;
+                    }
+                    return true;
                 then:
                   - if:
                       condition:
-                        lambda: return !id(external_listening_duck_active);
+                        lambda: return !id(external_listening_volume_saved);
                       then:
-                        - lambda: |-
-                            id(external_listening_duck_entity) = id(external_assist_media_player_select).current_option();
-                            id(external_listening_duck_active) = true;
-                            id(external_listening_volume_saved) = true;
+                        - script.execute: capture_external_listening_audio
+                        - script.wait: capture_external_listening_audio
+                  - if:
+                      condition:
+                        lambda: return id(external_listening_volume_saved) &&
+                                       !id(external_listening_duck_entity).empty() &&
+                                       id(external_listening_duck_entity) != "None";
+                      then:
+                        - lambda: id(external_listening_duck_active) = true;
                         - logger.log:
                             level: DEBUG
-                            format: "External listening HA script duck: %s -> 5%%"
+                            format: "External listening duck: setting %s to 5%%"
                             args: ['id(external_listening_duck_entity).c_str()']
                         - homeassistant.action:
-                            action: script.satellite1_external_listening_duck
+                            action: media_player.volume_set
                             data:
-                              media_player_entity: !lambda return id(external_listening_duck_entity);
-                              restore_volume_helper: "${external_listening_volume_helper}"
-                              duck_volume: "${external_listening_duck_volume}"
+                              entity_id: !lambda return id(external_listening_duck_entity);
+                              volume_level: "${external_listening_duck_volume}"
                             on_error:
                               - logger.log:
                                   level: WARN
-                                  format: "External listening HA script duck failed; restore volume was not saved: %s"
+                                  format: "External listening volume duck failed: %s"
                                   args: ['error.c_str()']
-                              - lambda: |-
-                                  id(external_listening_volume_saved) = false;
-                                  id(external_listening_duck_active) = false;
-                                  id(external_listening_duck_entity).clear();
+                              - lambda: id(external_listening_duck_active) = false;
                       else:
                         - logger.log:
-                            level: DEBUG
-                            format: "External listening duck already active for %s"
-                            args: ['id(external_listening_duck_entity).c_str()']
+                            level: WARN
+                            format: "External listening duck skipped; no firmware-captured restore volume"
 
   - id: restore_external_listening_audio
     mode: restart
@@ -562,18 +687,20 @@ script:
                 then:
                   - logger.log:
                       level: DEBUG
-                      format: "External listening HA script restore: ${external_listening_volume_helper} -> %s"
-                      args: ['id(external_listening_duck_entity).c_str()']
+                      format: "External listening firmware volume restore: %s -> %.3f"
+                      args: ['id(external_listening_duck_entity).c_str()', 'id(external_listening_restore_volume)']
                   - homeassistant.action:
-                      action: script.satellite1_external_listening_restore
+                      action: media_player.volume_set
                       data:
-                        media_player_entity: !lambda return id(external_listening_duck_entity);
-                        restore_volume_helper: "${external_listening_volume_helper}"
-                        fallback_volume: "${external_listening_duck_volume}"
+                        entity_id: !lambda return id(external_listening_duck_entity);
+                        volume_level: !lambda |-
+                          char volume[16];
+                          snprintf(volume, sizeof(volume), "%.3f", id(external_listening_restore_volume));
+                          return std::string(volume);
                       on_error:
                         - logger.log:
                             level: WARN
-                            format: "External listening HA script restore failed; keeping restore state for retry: %s"
+                            format: "External listening firmware volume restore failed; keeping restore state for retry: %s"
                             args: ['error.c_str()']
                         - lambda: id(external_listening_restore_failed) = true;
                   - if:
@@ -586,7 +713,7 @@ script:
                 else:
                   - logger.log:
                       level: WARN
-                      format: "External listening restore skipped; no saved helper volume for %s"
+                      format: "External listening restore skipped; no saved firmware volume for %s"
                       args: ['id(external_listening_duck_entity).c_str()']
             - if:
                 condition:
@@ -596,10 +723,7 @@ script:
                       condition:
                         lambda: return id(external_listening_restore_final_cleanup);
                       then:
-                        - lambda: |-
-                            id(external_listening_duck_active) = false;
-                            id(external_listening_duck_entity).clear();
-                            id(external_listening_volume_saved) = false;
+                        - script.execute: clear_external_listening_audio_state
                         - logger.log:
                             level: DEBUG
                             format: "External listening restore state cleared"
@@ -611,6 +735,16 @@ script:
                   - logger.log:
                       level: WARN
                       format: "External listening restore failed; keeping restore state for retry"
+          else:
+            - if:
+                condition:
+                  lambda: return id(external_listening_restore_final_cleanup) &&
+                                 id(external_listening_volume_saved);
+                then:
+                  - logger.log:
+                      level: DEBUG
+                      format: "External listening capture cleared without restore because no duck was applied"
+                  - script.execute: clear_external_listening_audio_state
 
   # Script used activate the stop word if the TTS step is long.
   # Why is this wrapped on a script?
