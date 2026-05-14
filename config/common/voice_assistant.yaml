@@ -14,7 +14,7 @@ substitutions:
   # current volume into firmware before listening ducking starts.
   ha_api_base_url: "http://homeassistant.local:8123"
   # secrets.yaml value must include the prefix, e.g. "Bearer eyJ..."
-  ha_api_bearer_token: !secret ha_bearer
+  ha_api_bearer_token: !secret ha_api_bearer_token
   # Extra guard after the satellite reaches idle before final external restore.
   external_listening_idle_restore_guard: "200ms"
   # Extra time to keep local mirrored external prompts active before HA starts
