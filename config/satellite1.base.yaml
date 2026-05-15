@@ -18,7 +18,7 @@ substitutions:
   # HA media_player entity (for example "media_player.kitchen_2") before
   # flashing a satellite that should use external speaker playback.
   external_assist_primary_media_player: "media_player.none"
-  build_check_phrase: "SAT1_BUILD_CHECK_SINGLE_SUB_EXTERNAL_VOLUME_V2_2026_05_14"
+  build_check_phrase: "SAT1_BUILD_CHECK_ACTIVATION_WAKE_SOUND_2026_05_15"
 
 globals:
   # Global initialisation variable. Initialized to true and set to false once everything is connected. Only used to have a smooth "plugging" experience

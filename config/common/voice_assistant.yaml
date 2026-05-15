@@ -86,6 +86,11 @@ globals:
     restore_value: no
     initial_value: 'false'
 
+  - id: activation_wake_sound_played
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
 microphone:
   - platform: satellite1
     id: sat1_mics
@@ -140,24 +145,11 @@ micro_wake_word:
                           then:
                             - media_player.stop:
                                 announcement: true
-                          # Start the voice assistant. In external-speaker
-                          # mode we intentionally skip the Satellite wake FLAC
-                          # and let Music Assistant's announcement cue on the
-                          # upcoming TTS be the external audible cue. That
-                          # avoids a separate URL fetch before Assist starts.
+                          # Start the voice assistant. Play the activation cue
+                          # first for both internal and external speaker modes.
                           else:
-                            - if:
-                                condition:
-                                  and:
-                                    - switch.is_on: wake_sound
-                                    - switch.is_off: external_assist_speaker_switch
-                                then:
-                                  - script.execute:
-                                      id: play_sound
-                                      priority: true
-                                      sound_file: !lambda return id(wake_word_triggered_sound);
-                                      sound_file_url: "${external_sound_base}/wake_word_triggered.flac"
-                                  - delay: 300ms
+                            - script.execute: play_activation_wake_sound
+                            - script.wait: play_activation_wake_sound
                             - if:
                                 condition:
                                   switch.is_on: external_assist_speaker_switch
@@ -247,6 +239,9 @@ voice_assistant:
               id: media_mixing_input
               decibel_reduction: 20
               duration: 0.0s
+    - script.execute: play_activation_wake_sound
+    - script.wait: play_activation_wake_sound
+    - lambda: id(activation_wake_sound_played) = false;
   on_listening:
     - lambda: |-
         id(external_prompt_mirror_active) = false;
@@ -519,6 +514,23 @@ voice_assistant:
     - script.execute: control_leds
 
 script:
+  - id: play_activation_wake_sound
+    mode: restart
+    then:
+      - if:
+          condition:
+            and:
+              - switch.is_on: wake_sound
+              - lambda: return !id(activation_wake_sound_played);
+          then:
+            - lambda: id(activation_wake_sound_played) = true;
+            - script.execute:
+                id: play_sound
+                priority: true
+                sound_file: !lambda return id(wake_word_triggered_sound);
+                sound_file_url: "${external_sound_base}/wake_word_triggered.flac"
+            - delay: 300ms
+
   - id: restore_external_audio_window
     mode: queued
     then:
