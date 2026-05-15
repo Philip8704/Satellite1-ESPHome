@@ -191,6 +191,10 @@ voice_assistant:
         id(external_media_player)->set_announcement_finish_hold_ms(0);
     - script.execute: control_leds
   on_error:
+    - logger.log:
+        level: ERROR
+        format: "Assist Pipeline Error: %s - %s"
+        args: ['code.c_str()', 'message.c_str()']
     - if:
         condition:
           and:
