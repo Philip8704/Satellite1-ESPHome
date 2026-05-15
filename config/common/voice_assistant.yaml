@@ -145,8 +145,8 @@ micro_wake_word:
                           then:
                             - media_player.stop:
                                 announcement: true
-                          # Start the voice assistant. Play the activation cue
-                          # first for both internal and external speaker modes.
+                          # Start Assist after the cue so the sound means
+                          # "you can speak now" for wake-word activation.
                           else:
                             - script.execute: play_activation_wake_sound
                             - script.wait: play_activation_wake_sound
@@ -187,6 +187,7 @@ voice_assistant:
     - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
     - lambda: |-
         id(external_prompt_mirror_active) = false;
+        id(activation_wake_sound_played) = false;
         id(external_media_player)->set_announcement_finish_hold_ms(0);
     - script.execute: control_leds
   on_error:
@@ -203,6 +204,7 @@ voice_assistant:
     - lambda: |-
         id(external_prompt_mirror_active) = false;
         id(external_listening_restore_final_cleanup) = false;
+        id(activation_wake_sound_played) = false;
         id(external_media_player)->set_announcement_finish_hold_ms(0);
     - if:
         condition:
@@ -239,12 +241,15 @@ voice_assistant:
               id: media_mixing_input
               decibel_reduction: 20
               duration: 0.0s
+  on_listening:
+    # Service-started conversations reach this point after any prompt playback.
+    # Wake-word runs have already played this cue before Assist started, so the
+    # script's one-shot guard skips a duplicate here.
     - script.execute: play_activation_wake_sound
     - script.wait: play_activation_wake_sound
-    - lambda: id(activation_wake_sound_played) = false;
-  on_listening:
     - lambda: |-
         id(external_prompt_mirror_active) = false;
+        id(activation_wake_sound_played) = false;
         id(external_media_player)->set_announcement_finish_hold_ms(0);
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
     - if:
@@ -469,6 +474,7 @@ voice_assistant:
     - script.stop: activate_stop_word_if_tts_step_is_long
     - lambda: |-
         id(external_prompt_mirror_active) = false;
+        id(activation_wake_sound_played) = false;
         id(external_media_player)->set_announcement_finish_hold_ms(0);
     # Disable the stop word (If the tiemr is not ringing)
     - if:
