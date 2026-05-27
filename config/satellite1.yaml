@@ -7,7 +7,7 @@ substitutions:
 
 packages:
   # This is an inline package to prefix the on_client_connected with the wait_until action
-  # It must appear before the actual package so it becomes the orignal config and the
+  # It must appear before the actual package so it becomes the original config and the
   # on_client_connected list from the package config is appended onto this one.
   va_connected_wait_for_ble_and_flasher:
     voice_assistant:
@@ -66,8 +66,6 @@ esp32_improv:
     - lambda: id(improv_ble_in_progress) = false;
     - script.execute: control_leds
 
-http_request:
-
 ota:
   - platform: http_request
     id: ota_http_request
@@ -100,43 +98,28 @@ external_components:
       type: local
       path: ../esphome/components
     components:
-      - audio
       - fusb302b
       - i2s_audio
       - memory_flasher
       - micro_wake_word
       - mww_training_capture
-      - mixer
       - pcm5122
-      - resampler
       - satellite1
-      - snapcast
-      - speaker
+      - satellite1_radar
+      - speaker_source
       - tas2780
+
+  - source:
+      # https://github.com/esphome/esphome/pull/12429
+      type: git
+      url: https://github.com/esphome/esphome
+      ref: ff8ce89556748509d7ee8724e12d9d43d3c8c1e8
+    refresh: 300s
+    components: [http_request]
 
 logger:
   deassert_rts_dtr: true
   hardware_uart: USB_SERIAL_JTAG
-  level: INFO
+  level: debug
   logs:
-    mww_training_capture: INFO
-    main: WARN
-    voice_assistant: WARN
-    media_player: WARN
-    speaker_media_player: WARN
-    speaker_media_player.pipeline: WARN
-    ring_buffer: WARN
-    i2s_audio.speaker: WARN
-    speaker_mixer: WARN
-    dac_proxy: WARN
-    micro_wake_word: WARN
-    snapcast_client: WARN
-    snapcast_stream: WARN
-    snapcast_rpc: WARN
-    transport: WARN
-    sensor: WARN
-    light: WARN
-    safe_mode: WARN
-    esp32.preferences: WARN
-    tas2780: WARN
     ltr_als_ps: WARN

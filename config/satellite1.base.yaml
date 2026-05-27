@@ -11,14 +11,10 @@ substitutions:
   company_name: FutureProofHomes
   project_name: Satellite1
   component_name: Core
+  external_assist_primary_media_player: "media_player.none"
 
   esp32_fw_version: dev
   xmos_fw_version: "v1.0.3"
-  # Per-device override for external Assist audio routing. Set this to a real
-  # HA media_player entity (for example "media_player.kitchen_2") before
-  # flashing a satellite that should use external speaker playback.
-  external_assist_primary_media_player: "media_player.none"
-  build_check_phrase: "SAT1_BUILD_CHECK_ACTIVATION_WAKE_SOUND_2026_05_15"
 
 globals:
   # Global initialisation variable. Initialized to true and set to false once everything is connected. Only used to have a smooth "plugging" experience
@@ -36,12 +32,17 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
+  # Global variable tracking the XMOS flasher status.
+  - id: pd_power_contract
+    type: int
+    restore_value: no
+    initial_value: '0'
 
 esphome:
   name: ${node_name}
   name_add_mac_suffix: true
   friendly_name: ${friendly_name}
-  min_version: 2026.3.0
+  min_version: 2026.4.0
 
   project:
     name: ${company_name}.${project_name}
@@ -51,19 +52,13 @@ esphome:
     - priority: -100
       then:
         - logger.log: "${company_name} ${project_name} ${component_name} running ESP firmware: ${esp32_fw_version} and XMOS firmware: ${xmos_fw_version}"
-        - logger.log: "BUILD CHECK PHRASE: ${build_check_phrase}"
         # Run the script to refresh the LED status
         - script.execute: control_leds
         - delay: 1s
 
-        # External-speaker mode always keeps the local mirror on line-out so
-        # reboot/restored DAC state cannot leak audio through the TAS speaker.
-        # Internal-speaker mode keeps the original fallback: if line-out was
-        # used previously but is not available, try the speaker.
+        # if line_out was used previously but is not available try speaker
         - lambda: |
-            if (id(external_assist_speaker_switch).state) {
-              id(dac_proxy).activate_line_out();
-            } else if (!id(line_out_sensor).state && id(dac_proxy).active_dac == 1) {
+            if( !id(line_out_sensor).state && id(dac_proxy).active_dac == 1){
               id(dac_proxy).activate_speaker();
             }
 
@@ -90,16 +85,32 @@ packages:
   sensors: !include common/hat_sensors.yaml
   buttons: !include common/buttons.yaml
   ha: !include common/home_assistant.yaml
+  spk: !include common/speaker.yaml
   mp: !include common/media_player.yaml
   va: !include common/voice_assistant.yaml
   timer: !include common/timer.yaml
   led_ring: !include common/led_ring.yaml
+  mmwave: !include common/mmwave.yaml
+  sendspin: !include common/sendspin.yaml
 
   ## OPTIONAL COMPONENTS
-  # mmwave_ld2410: !include common/mmwave_ld2410.yaml
-  # mmwave_ld2450: !include common/mmwave_ld2450.yaml
   # debug: !include common/debug.yaml
   # developer: !include common/developer.yaml
+
+fusb302b:
+  id: pd_fusb302b
+  irq_pin: GPIO1
+  request_voltage: 20
+  on_power_ready:
+    then:
+      - logger.log:
+          format: "PD contract got accepted: %s"
+          args: ['id(pd_fusb302b).contract.c_str()']
+      - text_sensor.template.publish:
+          id: pd_state_text
+          state: !lambda 'return id(pd_fusb302b).contract;'
+      - lambda: id(pd_power_contract) = id(pd_fusb302b).contract_voltage;
+      - script.execute: tas2780_ensure_active
 
 http_request:
 

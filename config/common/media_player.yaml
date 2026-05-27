@@ -1,70 +1,57 @@
-audio_dac:
-  - platform: pcm5122
-    id: line_out_dac
-    address: 0x4D
-  - platform: tas2780
-    id: speaker_dac
-    address: 0x3F
-  - platform: satellite1
-    id: dac_proxy
-    speaker_dac: speaker_dac
-    line_out_dac: line_out_dac
+substitutions:
+  jack_connected_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/jack_connected.flac
+  jack_disconnected_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/jack_disconnected.flac
+  mute_switch_on_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/mute_switch_on.flac
+  mute_switch_off_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/mute_switch_off.flac
+  timer_finished_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/timer_finished.flac
+  wake_word_triggered_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/wake_word_triggered.flac
+  factory_reset_initiated_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/factory_reset_initiated.mp3
+  factory_reset_cancelled_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/factory_reset_cancelled.mp3
+  factory_reset_confirmed_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/factory_reset_confirmed.mp3
+  center_button_press_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/center_button_press.flac
+  center_button_double_press_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/center_button_double_press.flac
+  center_button_triple_press_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/center_button_triple_press.flac
+  center_button_long_press_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/center_button_long_press.flac
 
-    on_state_change:
-      - media_player.speaker.restore_volume:
-          volume: !lambda return id(dac_proxy).volume();
-          mute: !lambda return id(dac_proxy).is_muted();
+audio_file:
+  - id: factory_reset_initiated_sound
+    file: ${factory_reset_initiated_sound_file}
+  - id: factory_reset_cancelled_sound
+    file: ${factory_reset_cancelled_sound_file}
+  - id: factory_reset_confirmed_sound
+    file: ${factory_reset_confirmed_sound_file}
+  - id: jack_connected_sound
+    file: ${jack_connected_sound_file}
+  - id: jack_disconnected_sound
+    file: ${jack_disconnected_sound_file}
+  - id: mute_switch_on_sound
+    file: ${mute_switch_on_sound_file}
+  - id: mute_switch_off_sound
+    file: ${mute_switch_off_sound_file}
+  - id: timer_finished_sound
+    file: ${timer_finished_sound_file}
+  - id: wake_word_triggered_sound
+    file: ${wake_word_triggered_sound_file}
+  - id: center_button_press_sound
+    file: ${center_button_press_sound_file}
+  - id: center_button_double_press_sound
+    file: ${center_button_double_press_sound_file}
+  - id: center_button_triple_press_sound
+    file: ${center_button_triple_press_sound_file}
+  - id: center_button_long_press_sound
+    file: ${center_button_long_press_sound_file}
 
-api:
-  actions:
-    - action: activate_speaker_dac
-      then:
-        - dac_proxy.activate_speaker:
-
-    - action: activate_lineout_dac
-      then:
-        - dac_proxy.activate_line_out:
+media_source:
+  - platform: audio_file
+    id: audio_file_announcement_source
+  - platform: http_request
+    id: http_announcement_source
+    buffer_size: 250000
+  - platform: http_request
+    id: http_media_source
+    buffer_size: 500000
 
 select:
-  - platform: template
-    name: Speaker channel output
-    id: tas_mode_select
-    icon: "mdi:speaker-multiple"
-    options:
-      - "Mono (Left + Right)"
-      - "Left Channel Only"
-      - "Right Channel Only"
-    initial_option: "Mono (Left + Right)"
-    entity_category: config
-    optimistic: true
-    restore_value: true
-    on_value:
-      - tas2780.update_config:
-          channel: !lambda |-
-            auto index = id(tas_mode_select).active_index();
-            if (index.has_value()){
-              return index.value();
-            }
-            ESP_LOGI("main", "No channel selected");
-            return 0;
-
-  # External Assist Media Player select.
-  #
-  # The base firmware keeps a disabled media_player.none fallback through the default
-  # external_assist_primary_media_player substitution so the firmware still builds.
-  # For a normal one-room satellite, set only this substitution in the
-  # per-device YAML before flashing:
-  #
-  #   substitutions:
-  #     external_assist_primary_media_player: "media_player.kitchen_2"
-  #
-  # The runtime logic in this firmware (play_sound script, control_volume
-  # script, voice_assistant on_intent_progress / on_tts_end) reads the
-  # CURRENT option of this select via `current_option()` and forwards it
-  # to Home Assistant media_player actions as the entity_id.
-  # That option comes from external_assist_primary_media_player and must be a
-  # valid HA media_player entity_id, not a friendly name. media_player.none is only a
-  # build-safe fallback for devices without any external speaker configured.
   - platform: template
     name: External Assist Media Player
     id: external_assist_media_player_select
@@ -77,70 +64,13 @@ select:
     restore_value: true
 
 sensor:
-  # Internal mirror of the configured external Assist media player's current
-  # HA volume_level attribute. This lets firmware save/restore volume without
-  # HA helper entities, HA scripts, REST calls, or scene snapshots.
   - platform: homeassistant
     id: external_assist_selected_media_player_volume
     entity_id: ${external_assist_primary_media_player}
     attribute: volume_level
     internal: true
 
-binary_sensor:
-  - platform: gpio
-    id: line_out_sensor
-    pin:
-      pcm5122:
-      pin: 4
-      inverted: false
-    name: "Line-Out Connected"
-    icon: "mdi:audio-input-stereo-minijack"
-    filters:
-      - delayed_on: 200ms
-      - delayed_off: 200ms
-
-    on_press:
-      - dac_proxy.activate_line_out:
-      - lambda: id(jack_plugged_recently) = true;
-      - script.execute: control_leds
-      - delay: 200ms
-      - script.execute:
-          id: play_sound
-          priority: false
-          sound_file: !lambda return id(jack_connected_sound);
-          sound_file_url: "${external_sound_base}/jack_connected.flac"
-      - delay: 800ms
-      - lambda: id(jack_plugged_recently) = false;
-      - script.execute: control_leds
-
-    on_release:
-      - if:
-          condition:
-            switch.is_on: external_assist_speaker_switch
-          then:
-            - dac_proxy.activate_line_out:
-          else:
-            - dac_proxy.activate_speaker:
-      - lambda: id(jack_unplugged_recently) = true;
-      - script.execute: control_leds
-      - delay: 200ms
-      - script.execute:
-          id: play_sound
-          priority: false
-          sound_file: !lambda return id(jack_disconnected_sound);
-          sound_file_url: "${external_sound_base}/jack_disconnected.flac"
-      - delay: 800ms
-      - lambda: id(jack_unplugged_recently) = false;
-      - script.execute: control_leds
-
 switch:
-  # V2 ceiling-mount default: ON. The Satellite1 routes ALL audio (wake
-  # chime path, TTS, button feedback, timer ring, etc.) through the
-  # external HA media player selected below. The internal speaker DAC is
-  # held muted (line-out active) so the device is silent locally, which is
-  # what you want when the device is mounted in a ceiling without a
-  # physical speaker. Flip this OFF for a desktop install with the
-  # internal speaker.
   - platform: template
     id: external_assist_speaker_switch
     name: External Assist Speaker
@@ -152,8 +82,7 @@ switch:
       - switch.template.publish:
           id: external_assist_speaker_switch
           state: ON
-      # Keep the internal speaker DAC muted while external mode is active.
-      - dac_proxy.activate_line_out:
+      - script.execute: activate_line_out
       - media_player.stop:
           id: external_media_player
           announcement: true
@@ -165,114 +94,32 @@ switch:
           condition:
             binary_sensor.is_on: line_out_sensor
           then:
-            - dac_proxy.activate_line_out:
+            - script.execute: activate_line_out
           else:
-            - dac_proxy.activate_speaker:
-
-  # Snapcast client (multi-room synchronized audio).
-  #
-  # V2 ceiling-mount default: OFF. Snapcast streams synchronized audio
-  # through the LOCAL i2s_audio_speaker pipeline, which is muted in
-  # external mode. Leaving the client running just wastes CPU and ring
-  # buffers on a ceiling-mount unit. Turn this back ON manually if you
-  # actually have a snapserver feeding multi-room audio to the device's
-  # line-out / internal speaker.
-  - platform: template
-    id: snapcast_switch
-    name: Snapcast
-    icon: "mdi:cast-audio"
-    entity_category: config
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
-    on_turn_on:
-      then:
-        - snapcast.enable:
-    on_turn_off:
-      then:
-        - snapcast.disable:
-
-fusb302b:
-  id: pd_fusb302b
-  irq_pin: GPIO1
-  request_voltage: 20
-  on_power_ready:
-    then:
-      - logger.log:
-          format: "PD contract got accepted: %s"
-          args: ['id(pd_fusb302b).contract.c_str()']
-
-      - text_sensor.template.publish:
-          id: pd_state_text
-          state: !lambda 'return id(pd_fusb302b).contract;'
-      - if:
-          condition:
-            lambda: |-
-              return id(pd_fusb302b).contract_voltage >= 9;
-          then:
-            - tas2780.activate:
-                mode: 2
-          else:
-            - tas2780.activate:
-                mode: 0
-speaker:
-  - platform: i2s_audio
-    id: i2s_audio_speaker
-    sample_rate: 48000
-    i2s_dout_pin: GPIO9
-    bits_per_sample: 32bit
-    i2s_audio_id: i2s_shared
-    dac_type: external
-    channel: stereo
-    timeout: never
-    audio_dac: dac_proxy
-    # buffer_duration: 100ms
-
-  # Virtual speakers to combine the announcement and media streams together into one output
-  - platform: mixer
-    id: mixing_speaker
-    output_speaker: i2s_audio_speaker
-    num_channels: 2
-    source_speakers:
-      - id: announcement_mixing_input
-        timeout: never
-      - id: media_mixing_input
-        timeout: never
-        buffer_duration: 100ms
-
-  # Vritual speakers to resample each pipelines' audio, if necessary, as the mixer speaker requires the same sample rate
-  - platform: resampler
-    id: announcement_resampling_speaker
-    output_speaker: announcement_mixing_input
-    sample_rate: 48000
-    bits_per_sample: 16
-  - platform: resampler
-    id: media_resampling_speaker
-    output_speaker: media_mixing_input
-    sample_rate: 48000
-    bits_per_sample: 16
-
-snapcast:
-  id: snapcast_client
+            - script.execute: activate_internal_speaker
 
 media_player:
-  - platform: speaker
+  - platform: speaker_source
     id: external_media_player
-    name: Sat1 Media Player
-    internal: false
+    name: Media Player
     volume_increment: 0.05
     volume_min: 0.1
-    volume_max: 1.
-    snapcast: snapcast_client
+    volume_max: 1.0
     announcement_pipeline:
       speaker: announcement_resampling_speaker
       format: FLAC     # FLAC is the least processor intensive codec
       num_channels: 1  # Stereo audio is unnecessary for announcements
       sample_rate: 48000
+      sources:
+        - audio_file_announcement_source
+        - http_announcement_source
     media_pipeline:
       speaker: media_resampling_speaker
       format: FLAC     # FLAC is the least processor intensive codec
       num_channels: 2
       sample_rate: 48000
+      sources:
+        - http_media_source
 
     on_mute:
       - script.execute: control_leds
@@ -280,8 +127,7 @@ media_player:
       - script.execute: control_leds
     on_volume:
       - script.execute: control_leds
-    # Native internal-speaker ducking: announcements/TTS duck only the media
-    # mixer input, leaving the announcement pipeline at full volume.
+    # Apply audio ducking when an announcement starts
     on_announcement:
       - if:
           condition:
@@ -292,8 +138,7 @@ media_player:
                 decibel_reduction: 20
                 duration: 0.0s
 
-    # Restore internal media ducking when the local player is no longer
-    # announcing and Assist is not running.
+    # Restore audio ducking when not actively playing announcements or running voice assistant
     on_state:
       - if:
           condition:
@@ -311,53 +156,32 @@ media_player:
                 decibel_reduction: 0
                 duration: 1.0s
 
-    files:
-      - id: center_button_press_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_press.flac
-      - id: center_button_double_press_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_double_press.flac
-      - id: center_button_triple_press_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_triple_press.flac
-      - id: center_button_long_press_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_long_press.flac
-      - id: factory_reset_initiated_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/factory_reset_initiated.mp3
-      - id: factory_reset_cancelled_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/factory_reset_cancelled.mp3
-      - id: mute_switch_on_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/mute_switch_on.flac
-      - id: mute_switch_off_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/mute_switch_off.flac
-      - id: timer_finished_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
-      - id: wake_word_triggered_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac
-      - id: jack_connected_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/jack_connected.flac
-      - id: jack_disconnected_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/jack_disconnected.flac
-
 script:
   # Script executed when we want to play sounds on the device.
   - id: play_sound
     parameters:
       priority: bool
-      sound_file: "audio::AudioFile*"
-      sound_file_url: std::string
+      sound_file: string
     then:
       - if:
           condition:
             switch.is_on: external_assist_speaker_switch
           then:
-            - dac_proxy.activate_line_out:
+            - script.execute: activate_line_out
             - if:
                 condition:
                   lambda: |-
                     const auto option = id(external_assist_media_player_select).current_option();
                     return !option.empty() && option != "None" && option != "media_player.none";
                 then:
-                  # Let the selected Music Assistant player play direct URLs
-                  # using the same manual-entry metadata shape as HA DevTools.
+                  - if:
+                      condition:
+                        lambda: return priority;
+                      then:
+                        - homeassistant.action:
+                            action: media_player.media_stop
+                            data:
+                              entity_id: !lambda return id(external_assist_media_player_select).current_option();
                   - homeassistant.action:
                       action: media_player.play_media
                       data:
@@ -365,7 +189,17 @@ script:
                       data_template:
                         announce: "{{ true }}"
                         media: !lambda |-
-                          std::string url = sound_file_url;
+                          std::string file_name = sound_file;
+                          if (sound_file == "factory_reset_initiated_sound") {
+                            file_name = "factory_reset_initiated.mp3";
+                          } else if (sound_file == "factory_reset_cancelled_sound") {
+                            file_name = "factory_reset_cancelled.mp3";
+                          } else if (sound_file == "factory_reset_confirmed_sound") {
+                            file_name = "factory_reset_confirmed.mp3";
+                          } else if (sound_file.size() > 6 && sound_file.substr(sound_file.size() - 6) == "_sound") {
+                            file_name = sound_file.substr(0, sound_file.size() - 6) + ".flac";
+                          }
+                          std::string url = std::string("${external_sound_base}/") + file_name;
                           std::string entity = id(external_assist_media_player_select).current_option();
                           auto escape = [](std::string value) {
                             size_t pos = 0;
@@ -389,26 +223,23 @@ script:
                             format: "External play_media sound failed: %s"
                             args: ['error.c_str()']
           else:
+            - if:
+                condition:
+                  lambda: return priority;
+                then:
+                  - media_player.stop:
+                      id: external_media_player
+                      announcement: true
             - lambda: |-
-                if (priority) {
+                if ( (id(external_media_player).state != media_player::MediaPlayerState::MEDIA_PLAYER_STATE_ANNOUNCING ) || priority) {
                   id(external_media_player)
                     ->make_call()
-                    .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_STOP)
+                    .set_media_url("audio-file://" + sound_file)
                     .set_announcement(true)
                     .perform();
                 }
-                if ( (id(external_media_player).state != media_player::MediaPlayerState::MEDIA_PLAYER_STATE_ANNOUNCING ) || priority) {
-                  id(external_media_player)
-                    ->play_file(sound_file, true, false);
-                }
 
-  # Script to increased/decreased volume.
-  #
-  # In external mode the local external_media_player is silent (DAC routed
-  # to line-out, no internal speaker on a ceiling-mount install) so its
-  # volume slider has no audible effect. Forward volume commands directly
-  # to the configured external HA media player so the buttons control the
-  # speaker the user actually hears (for example, a Music Assistant player).
+  # Script to increased/decreased volume
   - id: control_volume
     mode: restart
     parameters:
@@ -442,8 +273,10 @@ script:
                   lambda: return increase_volume;
                 then:
                   - media_player.volume_up:
+                      id: external_media_player
                 else:
                   - media_player.volume_down:
+                      id: external_media_player
       - script.execute: control_leds
       - delay: 2s
       - lambda: id(volume_buttons_touched) = false;

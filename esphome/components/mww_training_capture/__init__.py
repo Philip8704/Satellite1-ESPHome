@@ -7,8 +7,8 @@ user probably said something close to the wake word but *low enough* that the
 real wake word never triggered.
 
 Captured WAV data is streamed directly to a companion service (the FastAPI app
-under `tools/mww_training_capture/`) and used as additional training data for
-the microWakeWord training notebooks.
+under `miscellaneous/tools/mww_training_capture/`) and used as additional
+training data for the microWakeWord training notebooks.
 
 Example YAML
 ------------
@@ -75,7 +75,7 @@ IsEnabledCondition = mww_training_capture_ns.class_(
     "IsEnabledCondition", automation.Condition
 )
 
-# Forward declared in micro_wake_word/__init__.py — pulling it in by hand here
+# Forward declared in micro_wake_word/__init__.py; pulling it in by hand here
 # keeps us decoupled from the load order while still letting ``cv.use_id`` find
 # the right cg type.
 micro_wake_word_ns = cg.esphome_ns.namespace("micro_wake_word")
@@ -84,7 +84,7 @@ WakeWordModel = micro_wake_word_ns.class_("WakeWordModel")
 
 
 def _validate_cutoff(value):
-    """A near-miss cutoff is on a [0.01, 0.99] band — outside that range it
+    """A near-miss cutoff is on a [0.01, 0.99] band. Outside that range it
     means the user wired things wrong (cutoff > probability_cutoff bypasses
     real detections, cutoff = 0 captures every scrap of audio)."""
     value = cv.percentage(value)

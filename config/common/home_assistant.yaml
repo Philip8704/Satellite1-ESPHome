@@ -1,14 +1,9 @@
 substitutions:
-  # Home Assistant TTS engine entity used when external assist speaker mode is enabled.
+  # Home Assistant TTS engine entity kept for external speaker compatibility.
   ha_tts_entity_id: tts.edge_tts
-  # LAN base URL HA serves chimes from. Drop the FLAC/MP3 files into
-  # <HA config>/www/sounds/ and they become reachable at this base. Used only
-  # when routing to an external HA media player; the internal speaker plays
-  # the FLACs that are embedded into the firmware at compile time.
-  # Override this in your top-level YAML if homeassistant.local is unreliable
-  # on your LAN, e.g.:
-  #   substitutions:
-  #     external_sound_base: http://192.168.1.10:8123/local/sounds
+  # LAN base URL HA serves chimes from. Drop matching files into
+  # <HA config>/www/sounds/ if external mode should play local chimes on
+  # the selected Home Assistant media player.
   external_sound_base: http://homeassistant.local:8123/local/sounds
 
 api:
@@ -35,9 +30,8 @@ button:
 
 switch:
   # MWW Training Capture master switch. When ON, the firmware records short
-  # WAVs of any near-miss wake-word activations and POSTs them to the
-  # companion service for use as training data. OFF by default so the
-  # firmware ships in a "no extra outbound traffic" mode.
+  # WAVs of near-miss wake-word activations and POSTs them to the companion
+  # capture service for training data. OFF by default.
   - platform: template
     id: training_capture_switch
     name: "Wake word training capture"
@@ -93,9 +87,6 @@ switch:
       - script.execute: control_leds
 
 sensor:
-  # Cumulative count of near-miss captures emitted since boot. Useful for
-  # spotting silent failures (e.g. the upload endpoint is unreachable) — if
-  # the switch is on but this counter never moves, training capture is dead.
   - platform: template
     id: mww_capture_counter
     name: "Wake word captures since boot"
@@ -106,10 +97,6 @@ sensor:
     update_interval: 30s
     lambda: 'return (float) id(mww_capture).get_capture_count();'
 
-  # Companion to ``mww_capture_counter``. If this counter climbs while the
-  # success counter doesn't, the firmware is detecting near-misses but the
-  # upload itself is failing (server unreachable, 4xx, ring overrun, etc.).
-  # See the troubleshooting section of tools/mww_training_capture/README.md.
   - platform: template
     id: mww_capture_drops
     name: "Wake word captures dropped"
