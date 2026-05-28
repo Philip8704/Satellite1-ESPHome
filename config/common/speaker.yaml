@@ -155,7 +155,11 @@ binary_sensor:
     on_release:
       - if:
           condition:
-            switch.is_on: external_assist_speaker_switch
+            and:
+              - switch.is_on: external_assist_speaker_switch
+              - lambda: |-
+                  const auto option = id(external_assist_media_player_select).current_option();
+                  return !option.empty() && option != "None" && option != "media_player.none";
           then:
             - script.execute: activate_line_out
           else:

@@ -12,6 +12,7 @@ substitutions:
   project_name: Satellite1
   component_name: Core
   external_assist_primary_media_player: "media_player.none"
+  external_assist_speaker_restore_mode: RESTORE_DEFAULT_OFF
 
   esp32_fw_version: dev
   xmos_fw_version: "v1.0.3"

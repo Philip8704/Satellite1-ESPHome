@@ -50,6 +50,31 @@ The `hey_haeris` model is expected on the Home Assistant ESPHome host at:
 /config/esphome/models/hey_haeris.json
 ```
 
+External Assist output is opt-in by default so a missing or unset Home Assistant
+media player cannot silence voice responses. Set these substitutions in the
+dashboard YAML when Sonos/Music Assistant routing should start enabled:
+
+```yaml
+substitutions:
+  external_assist_primary_media_player: media_player.office_2
+  external_assist_speaker_restore_mode: RESTORE_DEFAULT_ON
+```
+
+If `External Assist Speaker` is on but the selected option is `None` or
+`media_player.none`, firmware falls back to the internal/physical line-out path
+instead of routing Assist audio to nowhere.
+
+To offer more than the primary player in Home Assistant, extend the select in
+the device YAML and keep the primary player in that options list:
+
+```yaml
+select:
+  - id: !extend external_assist_media_player_select
+    options:
+      - media_player.office_2
+      - media_player.living_room_2
+```
+
 ## MWW Training Capture Add-on
 
 The only retained host-side tool is the Home Assistant add-on:

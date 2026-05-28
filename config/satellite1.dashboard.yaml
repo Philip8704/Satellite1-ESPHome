@@ -5,6 +5,10 @@ substitutions:
 
   # OPTIONALLY, set the log level to debug, info, warn, error
   log_level: debug
+  # Set this when using the External Assist Speaker switch. The same entity is
+  # used for volume capture/restore during listening.
+  # external_assist_primary_media_player: media_player.office_2
+  # external_assist_speaker_restore_mode: RESTORE_DEFAULT_ON
 
 esphome:
   name: ${name}
@@ -51,14 +55,26 @@ logger:
 #   ssid: !secret wifi_ssid
 #   password: !secret wifi_password
 
-## OPTIONALLY, uncomment the following lines to set a custom micro wake word model
+## OPTIONALLY, offer multiple external Sonos/Music Assistant targets.
+## Keep `external_assist_primary_media_player` in this options list.
+# select:
+#   - id: !extend external_assist_media_player_select
+#     options:
+#       - media_player.office_2
+#       - media_player.living_room_2
+
+## The custom hey_haeris model is already included by this fork from:
+## /config/esphome/models/hey_haeris.json
+##
+## OPTIONALLY, uncomment the following lines to remove bundled fallback wake
+## words and leave only hey_haeris. Remove the sensitivity selector as well,
+## because it only tunes the bundled okay_nabu / hey_jarvis models.
+## If you also extend `external_assist_media_player_select` above, combine both
+## select entries under one top-level `select:` block in your device YAML.
 # micro_wake_word:
 #   id: mww
 #   models:
-#     - id: new_wake_word
-#       model: https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json
-#     # uncomment the following line to remove the default "hey_jarvis" wake word
 #     - id: !remove hey_jarvis
-# you also want to remove the sensitivity selector as it is hard coded to the provided models
+#     - id: !remove okay_nabu
 # select:
-#   id: !remove mww_sensitivity_select
+#   - id: !remove mww_sensitivity_select

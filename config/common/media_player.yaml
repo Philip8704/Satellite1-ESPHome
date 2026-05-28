@@ -77,12 +77,26 @@ switch:
     icon: "mdi:speaker-wireless"
     entity_category: config
     optimistic: true
-    restore_mode: RESTORE_DEFAULT_ON
+    restore_mode: ${external_assist_speaker_restore_mode}
     turn_on_action:
       - switch.template.publish:
           id: external_assist_speaker_switch
           state: ON
-      - script.execute: activate_line_out
+      - if:
+          condition:
+            lambda: |-
+              const auto option = id(external_assist_media_player_select).current_option();
+              return !option.empty() && option != "None" && option != "media_player.none";
+          then:
+            - script.execute: activate_line_out
+          else:
+            - if:
+                condition:
+                  binary_sensor.is_on: line_out_sensor
+                then:
+                  - script.execute: activate_line_out
+                else:
+                  - script.execute: activate_internal_speaker
       - media_player.stop:
           id: external_media_player
           announcement: true
@@ -131,7 +145,11 @@ media_player:
     on_announcement:
       - if:
           condition:
-            switch.is_off: external_assist_speaker_switch
+            or:
+              - switch.is_off: external_assist_speaker_switch
+              - lambda: |-
+                  const auto option = id(external_assist_media_player_select).current_option();
+                  return option.empty() || option == "None" || option == "media_player.none";
           then:
             - mixer_speaker.apply_ducking:
                 id: media_mixing_input
@@ -143,7 +161,11 @@ media_player:
       - if:
           condition:
             and:
-              - switch.is_off: external_assist_speaker_switch
+              - or:
+                  - switch.is_off: external_assist_speaker_switch
+                  - lambda: |-
+                      const auto option = id(external_assist_media_player_select).current_option();
+                      return option.empty() || option == "None" || option == "media_player.none";
               - switch.is_off: timer_ringing
               - not:
                   voice_assistant.is_running:
@@ -165,7 +187,11 @@ script:
     then:
       - if:
           condition:
-            switch.is_on: external_assist_speaker_switch
+            and:
+              - switch.is_on: external_assist_speaker_switch
+              - lambda: |-
+                  const auto option = id(external_assist_media_player_select).current_option();
+                  return !option.empty() && option != "None" && option != "media_player.none";
           then:
             - script.execute: activate_line_out
             - if:
@@ -223,6 +249,13 @@ script:
                             format: "External play_media sound failed: %s"
                             args: ['error.c_str()']
           else:
+            - if:
+                condition:
+                  binary_sensor.is_on: line_out_sensor
+                then:
+                  - script.execute: activate_line_out
+                else:
+                  - script.execute: activate_internal_speaker
             - if:
                 condition:
                   lambda: return priority;
