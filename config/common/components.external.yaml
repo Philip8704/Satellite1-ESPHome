@@ -9,14 +9,17 @@ external_components:
       ref: ${ext_comp_repo_ref}
     refresh: 1s
     components:
+      - const
       - fusb302b
       - i2s_audio
       - memory_flasher
+      - media_source
       - micro_wake_word
       - mww_training_capture
       - pcm5122
       - satellite1
       - satellite1_radar
+      - sendspin
       - speaker_source
       - tas2780
 

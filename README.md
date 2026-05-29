@@ -41,7 +41,7 @@ This tree intentionally differs from vanilla 0.2.0-beta.0 in these areas:
 | External Assist speaker routing | `config/common/media_player.yaml`, `config/common/voice_assistant.yaml`, `config/common/buttons.yaml`, `config/common/speaker.yaml` | Routes Assist prompts and sounds to a selected Home Assistant media player, keeps local line-out mirroring for HA announcement state, supports external duck/restore, and lets the center button stop external playback. |
 | Announcement hold | `config/common/voice_assistant.yaml`, `esphome/components/speaker_source/` | Restores `set_announcement_finish_hold_ms(...)` so external prompt playback keeps the local announcement state padded for Sonos/Music Assistant latency. |
 | MWW training capture | `config/common/voice_assistant.yaml`, `config/common/home_assistant.yaml`, `esphome/components/micro_wake_word/`, `esphome/components/mww_training_capture/` | Captures near-miss wake-word audio when enabled in Home Assistant. Capture watches only `hey_haeris` with `lower_cutoff: 0.60`. |
-| SendSpin | `config/common/sendspin.yaml` | Keeps the 0.2.0 SendSpin media source/player path for internal/local speaker media. It is not used for external Sonos/Music Assistant rerouting. |
+| SendSpin | `config/common/sendspin.yaml`, `esphome/components/{const,media_source,sendspin}/` | Keeps the 0.2.0 SendSpin media source/player path for internal/local speaker media. The needed SendSpin components are vendored locally so ESPHome does not need to clone `kahrendt/esphome` during config/compile. It is not used for external Sonos/Music Assistant rerouting. |
 | Radar | `config/common/mmwave.yaml`, `esphome/components/satellite1_radar/` | Keeps the 0.2.0 radar package and local radar component. |
 
 The `hey_haeris` model is expected on the Home Assistant ESPHome host at:
@@ -152,6 +152,7 @@ baseline. Custom components and YAML patches are kept only where needed for:
 - external Assist media output and ducking;
 - microWakeWord near-miss capture forwarding;
 - local `speaker_source` announcement hold support;
+- local vendored SendSpin components from the pinned 0.2.0 source;
 - dashboard/import references to this fork.
 
 Do not reintroduce the old Snapcast path. SendSpin is the current 0.2.0 internal
