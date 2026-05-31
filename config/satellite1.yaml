@@ -98,6 +98,7 @@ external_components:
       type: local
       path: ../esphome/components
     components:
+      - api
       - const
       - fusb302b
       - i2s_audio
