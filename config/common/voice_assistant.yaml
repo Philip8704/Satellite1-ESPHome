@@ -1,21 +1,4 @@
 substitutions:
-  # ----------------------------------------------------------------------
-  # MWW Training Capture defaults
-  # ----------------------------------------------------------------------
-  # URL of the companion FastAPI service that ingests near-miss WAVs. See
-  # miscellaneous/tools/mww_training_capture/addon/ for the add-on implementation. Override in
-  # your top-level YAML (or `secrets:` block) if the service runs on a
-  # different host or port.
-  mww_capture_endpoint: http://homeassistant.local:8765/upload
-
-  # External HA media player volume while the Satellite is actively listening.
-  external_listening_duck_volume: "0.05"
-  # Extra guard after the satellite reaches idle before final external restore.
-  external_listening_idle_restore_guard: "200ms"
-  # Extra time to keep local mirrored external prompts active before HA starts
-  # follow-up listening after ask_question/start_conversation prompt playback.
-  external_prompt_mirror_hold_ms: "700"
-
   # Phases of the Voice Assistant
   # The voice assistant is ready to be triggered by a wake word
   voice_assist_idle_phase_id: '1'
@@ -39,58 +22,6 @@ globals:
     restore_value: no
     # initial_value: ${voice_assist_not_ready_phase_id}
 
-  # --------------------------------------------------------------------------
-  # Low-latency external TTS routing
-  # --------------------------------------------------------------------------
-  # Tracks whether the *already generated* streaming/TTS URL from HA has been
-  # forwarded to the external HA media player for the current Voice Assistant
-  # run. When true we skip any fallback (tts.speak / on_tts_end) so that we
-  # never trigger a second TTS generation on the HA side and never double-play.
-  - id: external_tts_forwarded
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-
-  - id: external_listening_duck_active
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-
-  - id: external_listening_duck_entity
-    type: std::string
-    restore_value: no
-    initial_value: '""'
-
-  - id: external_listening_restore_volume
-    type: float
-    restore_value: no
-    initial_value: '0.0'
-
-  - id: external_listening_volume_saved
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-
-  - id: external_prompt_mirror_active
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-
-  - id: external_listening_restore_failed
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-
-  - id: external_listening_restore_final_cleanup
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-
-  - id: activation_wake_sound_played
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-
 microphone:
   - platform: satellite1
     id: sat1_mics
@@ -105,8 +36,6 @@ microphone:
 micro_wake_word:
   id: mww
   models:
-    - model: /config/esphome/models/hey_haeris.json
-      id: hey_haeris
     - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/hey_jarvis.json
       id: hey_jarvis
     - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/okay_nabu.json
@@ -145,21 +74,34 @@ micro_wake_word:
                           condition:
                             media_player.is_announcing:
                               id: external_media_player
+
                           then:
                             - media_player.stop:
                                 announcement: true
                                 id: external_media_player
-                          # Start Assist after the cue so the sound means
-                          # "you can speak now" for wake-word activation.
+                          # Start the voice assistant and play the wake sound, if enabled
                           else:
-                            - script.execute: play_activation_wake_sound
-                            - script.wait: play_activation_wake_sound
                             - if:
                                 condition:
-                                  switch.is_on: external_assist_speaker_switch
+                                  switch.is_on: wake_sound
                                 then:
-                                  - script.execute: capture_external_listening_audio
-                                  - script.wait: capture_external_listening_audio
+                                  - script.execute:
+                                      id: play_sound
+                                      priority: true
+                                      sound_file: "wake_word_triggered_sound"
+                                  # External routing has to wait long enough
+                                  # for the wake chime to actually land on
+                                  # the MA speaker before voice_assistant
+                                  # starts — otherwise the satellite's mic
+                                  # opens while the chime is still playing
+                                  # remotely and STT picks it up.
+                                  - if:
+                                      condition:
+                                        lambda: 'return id(external_speaker_routing_on);'
+                                      then:
+                                        - delay: ${external_speaker_wake_sound_delay}
+                                      else:
+                                        - delay: 300ms
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
 
@@ -177,28 +119,14 @@ voice_assistant:
   volume_multiplier: 1
   on_client_connected:
     - lambda: id(init_in_progress) = false;
-    - if:
-        condition:
-          lambda: return id(external_listening_duck_active);
-        then:
-          - script.execute: restore_external_audio_window
-          - script.wait: restore_external_audio_window
     - micro_wake_word.start:
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
   on_client_disconnected:
     - voice_assistant.stop:
     - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
-    - lambda: |-
-        id(external_prompt_mirror_active) = false;
-        id(activation_wake_sound_played) = false;
-        id(external_media_player)->set_announcement_finish_hold_ms(0);
     - script.execute: control_leds
   on_error:
-    - logger.log:
-        level: ERROR
-        format: "Assist Pipeline Error: %s - %s"
-        args: ['code.c_str()', 'message.c_str()']
     - if:
         condition:
           and:
@@ -207,211 +135,65 @@ voice_assistant:
         then:
           - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
           - script.execute: control_leds
-    # Reset the low-latency forwarding flag so the next run is clean.
-    - lambda: id(external_tts_forwarded) = false;
-    - lambda: |-
-        id(external_prompt_mirror_active) = false;
-        id(external_listening_restore_final_cleanup) = false;
-        id(activation_wake_sound_played) = false;
-        id(external_media_player)->set_announcement_finish_hold_ms(0);
-    - if:
-        condition:
-          lambda: return id(external_assist_speaker_switch).state ||
-                         id(external_listening_duck_active);
-        then:
-          - logger.log:
-              level: DEBUG
-              format: "External listening restore deferred until satellite idle after error/abort"
-        else:
-          - mixer_speaker.apply_ducking:
-              id: media_mixing_input
-              decibel_reduction: 0
-              duration: 1.0s
+    # Stop ducking audio.
+    - mixer_speaker.apply_ducking:
+        id: media_mixing_input
+        decibel_reduction: 0   # 0 dB means no reduction
+        duration: 1.0s
+    # If we ducked the external player for listening and then errored before
+    # vad_end fired, restore so the player isn't left stuck at 5%.
+    - script.execute: restore_external_after_listening
+    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
 
-  # When the voice assistant starts, reset state for the next pipeline run.
+  # When the voice assistant starts: Play a wake up sound, duck audio.
   on_start:
-    # Reset the low-latency forwarding flag so the next pipeline run can forward
-    # the streaming TTS URL to the external media player.
-    - lambda: id(external_tts_forwarded) = false;
-    - lambda: |-
-        id(external_prompt_mirror_active) = false;
-        id(external_listening_restore_final_cleanup) = false;
-        id(external_media_player)->set_announcement_finish_hold_ms(0);
-    - if:
-        condition:
-          and:
-            - switch.is_on: external_assist_speaker_switch
-            - lambda: |-
-                const auto option = id(external_assist_media_player_select).current_option();
-                return !option.empty() && option != "None" && option != "media_player.none";
-        then:
-          - script.execute: capture_external_listening_audio
-          - script.wait: capture_external_listening_audio
-          - dac_proxy.activate_line_out:
-        else:
-          - if:
-              condition:
-                binary_sensor.is_on: line_out_sensor
-              then:
-                - script.execute: activate_line_out
-              else:
-                - script.execute: activate_internal_speaker
-          - mixer_speaker.apply_ducking:
-              id: media_mixing_input
-              decibel_reduction: 20
-              duration: 0.0s
+    - mixer_speaker.apply_ducking:
+        id: media_mixing_input
+        decibel_reduction: 20   # Number of dB quieter; higher implies more quiet, 0 implies full volume
+        duration: 0.0s          # The duration of the transition (default is 0)
+    # Fresh pipeline cycle — clear the "TTS already mirrored" guard so
+    # whichever trigger ends up carrying the URL (intent_progress for
+    # streaming, tts_end for everything else) gets to mirror exactly once.
+    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
   on_listening:
-    # Service-started conversations reach this point after any prompt playback.
-    # Wake-word runs have already played this cue before Assist started, so the
-    # script's one-shot guard skips a duplicate here.
-    - script.execute: play_activation_wake_sound
-    - script.wait: play_activation_wake_sound
-    - lambda: |-
-        id(external_prompt_mirror_active) = false;
-        id(activation_wake_sound_played) = false;
-        id(external_media_player)->set_announcement_finish_hold_ms(0);
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
-    - if:
-        condition:
-          switch.is_on: external_assist_speaker_switch
-        then:
-          - script.execute: duck_external_listening_audio
     - script.execute: control_leds
+    # External routing: duck the MA player to 5% so TTS tails / music can't
+    # bleed into the satellite mic during STT. Restored at on_stt_vad_end /
+    # on_end / on_error. No-op when routing is off or entity is unset.
+    - script.execute: duck_external_for_listening
   on_stt_vad_start:
     - lambda: id(voice_assistant_phase) = ${voice_assist_listening_for_command_phase_id};
-    - if:
-        condition:
-          switch.is_on: external_assist_speaker_switch
-        then:
-          - script.execute: duck_external_listening_audio
     - script.execute: control_leds
   on_stt_vad_end:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
-    - if:
-        condition:
-          lambda: return id(external_assist_speaker_switch).state ||
-                         id(external_listening_duck_active);
-        then:
-          - lambda: id(external_listening_restore_final_cleanup) = true;
-          - script.execute: restore_external_audio_window
-          - script.wait: restore_external_audio_window
-          - lambda: id(external_listening_restore_final_cleanup) = false;
     - script.execute: control_leds
+    # User has stopped speaking — restore the external player volume so
+    # background music / next-turn TTS resumes at its normal level. We
+    # intentionally restore here (not at on_end) per the framework spec:
+    # the duck is scoped to *listening*, not the whole assist cycle.
+    - script.execute: restore_external_after_listening
   on_intent_progress:
     - if:
         condition:
-          # A nonempty x variable means a streaming TTS url was sent to the local media player
-          # (same URL HA would stream to the local speaker). We forward it to the external
-          # HA media player for lowest-latency playback: no re-generation, playback starts
-          # as soon as HA streams the first TTS chunk.
+          # A nonempty x variable means a streaming TTS url was sent to the media player
           lambda: 'return !x.empty();'
         then:
-          - if:
-              condition:
-                and:
-                  - switch.is_on: external_assist_speaker_switch
-                  - lambda: |-
-                      const auto option = id(external_assist_media_player_select).current_option();
-                      return !option.empty() && option != "None" && option != "media_player.none";
-              then:
-                - if:
-                    condition:
-                      lambda: return (id(voice_assistant_phase) == ${voice_assist_idle_phase_id} ||
-                                      id(external_prompt_mirror_active)) &&
-                                     !id(external_listening_volume_saved);
-                    then:
-                      - script.execute: capture_external_listening_audio
-                      - script.wait: capture_external_listening_audio
-                - lambda: |-
-                    const auto option = id(external_assist_media_player_select).current_option();
-                    if ((id(voice_assistant_phase) == ${voice_assist_idle_phase_id} || id(external_prompt_mirror_active)) &&
-                        !option.empty() && option != "None" && option != "media_player.none") {
-                      id(external_prompt_mirror_active) = true;
-                      id(external_media_player)->set_announcement_finish_hold_ms(${external_prompt_mirror_hold_ms});
-                    }
-                - script.execute: restore_external_listening_audio
-                # Route the local media-player mirror to the unused line-out so
-                # HA still sees accurate announcement duration/status without
-                # leaking audio through the internal speaker.
-                - dac_proxy.activate_line_out:
-                # Forward the streaming URL to the selected Music Assistant
-                # player through media_player.play_media. The MA player expects
-                # the manual-entry metadata shape below for direct URLs.
-                - if:
-                    condition:
-                      lambda: |-
-                        const auto option = id(external_assist_media_player_select).current_option();
-                        return !option.empty() && option != "None" && option != "media_player.none";
-                    then:
-                      - homeassistant.action:
-                          action: media_player.play_media
-                          data:
-                            entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                          data_template:
-                            announce: "{{ true }}"
-                            media: !lambda |-
-                              std::string url = x;
-                              std::string entity = id(external_assist_media_player_select).current_option();
-                              auto escape = [](std::string value) {
-                                size_t pos = 0;
-                                while ((pos = value.find("\\", pos)) != std::string::npos) {
-                                  value.replace(pos, 1, "\\\\");
-                                  pos += 2;
-                                }
-                                pos = 0;
-                                while ((pos = value.find("'", pos)) != std::string::npos) {
-                                  value.replace(pos, 1, "\\'");
-                                  pos += 2;
-                                }
-                                return value;
-                              };
-                              url = escape(url);
-                              entity = escape(entity);
-                              return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
-                          on_error:
-                            - logger.log:
-                                level: WARN
-                                format: "External play_media streaming TTS failed: %s"
-                                args: ['error.c_str()']
-                      - lambda: id(external_tts_forwarded) = true;
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
           # Start a script that would potentially enable the stop word if the response is longer than a second
           - script.execute: activate_stop_word_once
+          # When external speaker routing is on, mirror the streaming TTS URL
+          # to the configured Music Assistant / HA media_player. The local
+          # speaker_source media_player keeps decoding the stream (silent at
+          # the DAC) so on_end / on_listening transitions stay accurate; the
+          # external entity is fed the same URL with announce: true so MA's
+          # native announcement-volume handling kicks in.
+          - script.execute:
+              id: play_on_external
+              url: !lambda 'return x;'
+          - lambda: 'id(external_tts_mirrored_this_cycle) = true;'
   on_tts_start:
-    # NOTE: We intentionally do NOT call `tts.speak` here any more when routing to
-    # an external HA media player. Doing so would force HA to *regenerate* the
-    # entire TTS response (a second time) after waiting for the full text to be
-    # produced by the LLM - that was the dominant latency source in the previous
-    # design. Instead, the streaming TTS URL is forwarded in `on_intent_progress`
-    # above (streaming providers) or in `on_tts_end` below (non-streaming
-    # providers). For external mode we keep the local media player running as a
-    # silent line-out mirror so HA gets accurate response duration/status.
-    - if:
-        condition:
-          and:
-            - switch.is_on: external_assist_speaker_switch
-            - lambda: |-
-                const auto option = id(external_assist_media_player_select).current_option();
-                return !option.empty() && option != "None" && option != "media_player.none";
-        then:
-          - if:
-              condition:
-                lambda: return (id(voice_assistant_phase) == ${voice_assist_idle_phase_id} ||
-                                id(external_prompt_mirror_active)) &&
-                               !id(external_listening_volume_saved);
-              then:
-                - script.execute: capture_external_listening_audio
-                - script.wait: capture_external_listening_audio
-          - lambda: |-
-              const auto option = id(external_assist_media_player_select).current_option();
-              if ((id(voice_assistant_phase) == ${voice_assist_idle_phase_id} || id(external_prompt_mirror_active)) &&
-                  !option.empty() && option != "None" && option != "media_player.none") {
-                id(external_prompt_mirror_active) = true;
-                id(external_media_player)->set_announcement_finish_hold_ms(${external_prompt_mirror_hold_ms});
-              }
-          - script.execute: restore_external_listening_audio
-          - dac_proxy.activate_line_out:
     - if:
         condition:
           # The intent_progress trigger didn't start the TTS Reponse
@@ -419,99 +201,50 @@ voice_assistant:
         then:
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
-    # Start a script that would potentially enable the stop word if the response is longer than a second
-    - script.execute: activate_stop_word_once
-
-  # Fires when a non-streaming TTS provider has finished generating the audio
-  # and publishes the final URL. This is the fallback path for providers that
-  # don't emit `tts_start_streaming` (i.e. no on_intent_progress URL). We
-  # forward that URL to the external HA media player so we still skip the
-  # second-generation cost of `tts.speak`.
+          # Start a script that would potentially enable the stop word if the response is longer than a second
+          - script.execute: activate_stop_word_once
+  # NOTE: on_tts_start's `x` is the spoken TEXT, not a URL
+  # (voice_assistant.cpp:730 fires tts_start_trigger with the response
+  # text). We can't mirror here — see on_tts_end below, where x IS a URL
+  # for both the assist pipeline and the announce / start_conversation
+  # service path.
   on_tts_end:
+    # `x` is the TTS URL on every TTS flow this firmware sees:
+    #   - assist pipeline streaming: tts_end fires after intent_progress
+    #     already mirrored — the dedup flag suppresses a double-play.
+    #   - assist pipeline non-streaming: intent_progress fired with an
+    #     empty URL so no mirror happened; we mirror here.
+    #   - assist_satellite.announce / start_conversation: intent_progress
+    #     never fires; tts_end is the only place the URL surfaces
+    #     (voice_assistant.cpp:949).
     - if:
         condition:
           and:
-            - switch.is_on: external_assist_speaker_switch
-            - lambda: 'return !id(external_tts_forwarded);'
             - lambda: 'return !x.empty();'
-            - lambda: |-
-                const auto option = id(external_assist_media_player_select).current_option();
-                return !option.empty() && option != "None" && option != "media_player.none";
+            - lambda: 'return !id(external_tts_mirrored_this_cycle);'
         then:
-          - if:
-              condition:
-                lambda: return (id(voice_assistant_phase) == ${voice_assist_idle_phase_id} ||
-                                id(external_prompt_mirror_active)) &&
-                               !id(external_listening_volume_saved);
-              then:
-                - script.execute: capture_external_listening_audio
-                - script.wait: capture_external_listening_audio
-          - lambda: |-
-              if (id(voice_assistant_phase) == ${voice_assist_idle_phase_id} || id(external_prompt_mirror_active)) {
-                id(external_prompt_mirror_active) = true;
-                id(external_media_player)->set_announcement_finish_hold_ms(${external_prompt_mirror_hold_ms});
-              }
-          - script.execute: restore_external_listening_audio
-          - dac_proxy.activate_line_out:
-          - homeassistant.action:
-              action: media_player.play_media
-              data:
-                entity_id: !lambda return id(external_assist_media_player_select).current_option();
-              data_template:
-                announce: "{{ true }}"
-                media: !lambda |-
-                  std::string url = x;
-                  std::string entity = id(external_assist_media_player_select).current_option();
-                  auto escape = [](std::string value) {
-                    size_t pos = 0;
-                    while ((pos = value.find("\\", pos)) != std::string::npos) {
-                      value.replace(pos, 1, "\\\\");
-                      pos += 2;
-                    }
-                    pos = 0;
-                    while ((pos = value.find("'", pos)) != std::string::npos) {
-                      value.replace(pos, 1, "\\'");
-                      pos += 2;
-                    }
-                    return value;
-                  };
-                  url = escape(url);
-                  entity = escape(entity);
-                  return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
-              on_error:
-                - logger.log:
-                    level: WARN
-                    format: "External play_media final TTS failed: %s"
-                    args: ['error.c_str()']
-          - lambda: id(external_tts_forwarded) = true;
+          - script.execute:
+              id: play_on_external
+              url: !lambda 'return x;'
+          - lambda: 'id(external_tts_mirrored_this_cycle) = true;'
   # When the voice assistant ends ...
   on_end:
     - wait_until:
         not:
           voice_assistant.is_running:
-    - if:
-        condition:
-          lambda: |-
-            const auto option = id(external_assist_media_player_select).current_option();
-            return !id(external_assist_speaker_switch).state ||
-                   option.empty() || option == "None" || option == "media_player.none";
-        then:
-          - mixer_speaker.apply_ducking:
-              id: media_mixing_input
-              decibel_reduction: 0
-              duration: 1.0s
+    # Stop ducking audio.
+    - mixer_speaker.apply_ducking:
+        id: media_mixing_input
+        decibel_reduction: 0   # 0 dB means no reduction
+        duration: 1.0s
     # Stop the script that would potentially enable the stop word if the response is longer than a second
     - script.stop: activate_stop_word_if_tts_step_is_long
-    - lambda: |-
-        id(external_prompt_mirror_active) = false;
-        id(activation_wake_sound_played) = false;
-        id(external_media_player)->set_announcement_finish_hold_ms(0);
     # Disable the stop word (If the tiemr is not ringing)
     - if:
         condition:
           switch.is_off: timer_ringing
         then:
-          - micro_wake_word.disable_model: stop
+    # - lambda: id(stop).disable();
     # If the end happened because of an error, let the error phase on for a second
     - if:
         condition:
@@ -521,23 +254,17 @@ voice_assistant:
     # Reset the voice assistant phase id and reset the LED animations.
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
-    - if:
-        condition:
-          lambda: return id(external_assist_speaker_switch).state ||
-                         id(external_listening_duck_active);
-        then:
-          - wait_until:
-              not:
-                media_player.is_announcing:
-                  id: external_media_player
-          - delay: ${external_listening_idle_restore_guard}
-          - logger.log:
-              level: DEBUG
-              format: "External listening idle-bound final restore"
-          - lambda: id(external_listening_restore_final_cleanup) = true;
-          - script.execute: restore_external_audio_window
-          - script.wait: restore_external_audio_window
-          - lambda: id(external_listening_restore_final_cleanup) = false;
+    # Defensive restore: on_stt_vad_end usually un-ducks the external player,
+    # but if the VA was cancelled mid-listening (action button, stop word,
+    # client disconnect) vad_end never fired and the player would stay
+    # stuck at 5%. The restore script is idempotent so calling it again
+    # after a normal cycle is harmless.
+    - script.execute: restore_external_after_listening
+    # Reset the TTS-mirrored guard for the next cycle. Critical for the
+    # assist_satellite.announce / start_conversation path because that
+    # path doesn't fire on_start (no RUN_START event), so on_end is the
+    # only reliable reset point for those cycles.
+    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
 
   on_timer_finished:
     - switch.turn_on: timer_ringing
@@ -551,218 +278,6 @@ voice_assistant:
     - script.execute: control_leds
 
 script:
-  - id: play_activation_wake_sound
-    mode: restart
-    then:
-      - if:
-          condition:
-            and:
-              - switch.is_on: wake_sound
-              - lambda: return !id(activation_wake_sound_played);
-          then:
-            - lambda: id(activation_wake_sound_played) = true;
-            - script.execute:
-                id: play_sound
-                priority: true
-                sound_file: "wake_word_triggered_sound"
-            - delay: 300ms
-
-  - id: restore_external_audio_window
-    mode: queued
-    then:
-      - logger.log:
-          level: DEBUG
-          format: "External audio restore window: restoring listening duck"
-      - script.execute: restore_external_listening_audio
-      - script.wait: restore_external_listening_audio
-
-  - id: clear_external_listening_audio_state
-    mode: restart
-    then:
-      - lambda: |-
-          id(external_listening_duck_active) = false;
-          id(external_listening_duck_entity).clear();
-          id(external_listening_restore_volume) = 0.0f;
-          id(external_listening_volume_saved) = false;
-          id(external_listening_restore_failed) = false;
-
-  - id: capture_external_listening_audio
-    mode: restart
-    then:
-      - if:
-          condition:
-            and:
-              - switch.is_on: external_assist_speaker_switch
-              - lambda: return !id(external_listening_volume_saved) &&
-                               !id(external_listening_duck_active);
-          then:
-            - if:
-                condition:
-                  lambda: |-
-                    const auto option = id(external_assist_media_player_select).current_option();
-                    return !option.empty() &&
-                           option != "None" &&
-                           option != "media_player.none" &&
-                           option == std::string("${external_assist_primary_media_player}") &&
-                           id(external_assist_selected_media_player_volume).has_state();
-                then:
-                  - lambda: |-
-                      id(external_listening_duck_entity) = id(external_assist_media_player_select).current_option();
-                      float volume = id(external_assist_selected_media_player_volume).state;
-                      if (volume < 0.0f) {
-                        volume = 0.0f;
-                      } else if (volume > 1.0f) {
-                        volume = 1.0f;
-                      }
-                      id(external_listening_restore_volume) = volume;
-                      id(external_listening_volume_saved) = true;
-                      id(external_listening_restore_failed) = false;
-                  - logger.log:
-                      level: DEBUG
-                      format: "External listening volume captured: %s -> %.3f"
-                      args: ['id(external_listening_duck_entity).c_str()', 'id(external_listening_restore_volume)']
-                else:
-                  - logger.log:
-                      level: DEBUG
-                      format: "External listening volume capture skipped; selected player is disabled, not primary, or has no HA volume state"
-
-  - id: duck_external_listening_audio
-    mode: queued
-    then:
-      - if:
-          condition:
-            switch.is_on: external_assist_speaker_switch
-          then:
-            - if:
-                condition:
-                  lambda: |-
-                    const auto option = id(external_assist_media_player_select).current_option();
-                    if (option.empty() || option == "None" || option == "media_player.none") {
-                      return false;
-                    }
-                    if (id(external_listening_volume_saved) &&
-                        !id(external_listening_duck_active) &&
-                        id(external_listening_duck_entity) != option) {
-                      ESP_LOGD("main", "External listening selected player changed before duck; recapturing");
-                      id(external_listening_duck_entity).clear();
-                      id(external_listening_restore_volume) = 0.0f;
-                      id(external_listening_volume_saved) = false;
-                      id(external_listening_restore_failed) = false;
-                    }
-                    return true;
-                then:
-                  - if:
-                      condition:
-                        lambda: return !id(external_listening_volume_saved);
-                      then:
-                        - script.execute: capture_external_listening_audio
-                        - script.wait: capture_external_listening_audio
-                  - if:
-                      condition:
-                        lambda: return id(external_listening_volume_saved) &&
-                                       !id(external_listening_duck_entity).empty() &&
-                                       id(external_listening_duck_entity) != "None" &&
-                                       id(external_listening_duck_entity) != "media_player.none";
-                      then:
-                        - lambda: id(external_listening_duck_active) = true;
-                        - logger.log:
-                            level: DEBUG
-                            format: "External listening duck: setting %s to 5%%"
-                            args: ['id(external_listening_duck_entity).c_str()']
-                        - homeassistant.action:
-                            action: media_player.volume_set
-                            data:
-                              entity_id: !lambda return id(external_listening_duck_entity);
-                              volume_level: "${external_listening_duck_volume}"
-                            on_error:
-                              - logger.log:
-                                  level: WARN
-                                  format: "External listening volume duck failed: %s"
-                                  args: ['error.c_str()']
-                              - lambda: id(external_listening_duck_active) = false;
-                      else:
-                        - logger.log:
-                            level: WARN
-                            format: "External listening duck skipped; no firmware-captured restore volume"
-
-  - id: restore_external_listening_audio
-    mode: restart
-    then:
-      - script.stop: duck_external_listening_audio
-      - if:
-          condition:
-            lambda: return id(external_listening_duck_active);
-          then:
-            - lambda: id(external_listening_restore_failed) = false;
-            - if:
-                condition:
-                  lambda: |-
-                    return !id(external_listening_duck_entity).empty() &&
-                           id(external_listening_duck_entity) != "None" &&
-                           id(external_listening_duck_entity) != "media_player.none" &&
-                           id(external_listening_volume_saved);
-                then:
-                  - logger.log:
-                      level: DEBUG
-                      format: "External listening firmware volume restore: %s -> %.3f"
-                      args: ['id(external_listening_duck_entity).c_str()', 'id(external_listening_restore_volume)']
-                  - homeassistant.action:
-                      action: media_player.volume_set
-                      data:
-                        entity_id: !lambda return id(external_listening_duck_entity);
-                        volume_level: !lambda |-
-                          char volume[16];
-                          snprintf(volume, sizeof(volume), "%.3f", id(external_listening_restore_volume));
-                          return std::string(volume);
-                      on_error:
-                        - logger.log:
-                            level: WARN
-                            format: "External listening firmware volume restore failed; keeping restore state for retry: %s"
-                            args: ['error.c_str()']
-                        - lambda: id(external_listening_restore_failed) = true;
-                  - if:
-                      condition:
-                        lambda: return !id(external_listening_restore_failed);
-                      then:
-                        - logger.log:
-                            level: DEBUG
-                            format: "External listening restore applied; saved state remains until satellite idle"
-                else:
-                  - logger.log:
-                      level: WARN
-                      format: "External listening restore skipped; no saved firmware volume for %s"
-                      args: ['id(external_listening_duck_entity).c_str()']
-            - if:
-                condition:
-                  lambda: return !id(external_listening_restore_failed);
-                then:
-                  - if:
-                      condition:
-                        lambda: return id(external_listening_restore_final_cleanup);
-                      then:
-                        - script.execute: clear_external_listening_audio_state
-                        - logger.log:
-                            level: DEBUG
-                            format: "External listening restore state cleared"
-                      else:
-                        - logger.log:
-                            level: DEBUG
-                            format: "External listening restore applied; keeping saved volume through error/response cleanup"
-                else:
-                  - logger.log:
-                      level: WARN
-                      format: "External listening restore failed; keeping restore state for retry"
-          else:
-            - if:
-                condition:
-                  lambda: return id(external_listening_restore_final_cleanup) &&
-                                 id(external_listening_volume_saved);
-                then:
-                  - logger.log:
-                      level: DEBUG
-                      format: "External listening capture cleared without restore because no duck was applied"
-                  - script.execute: clear_external_listening_audio_state
-
   # Script used activate the stop word if the TTS step is long.
   # Why is this wrapped on a script?
   #   Becasue we want to stop the sequence if the TTS step is faster than that.
@@ -792,35 +307,6 @@ script:
                 then:
                   - micro_wake_word.disable_model: stop
 
-# ----------------------------------------------------------------------------
-# MWW Training Capture
-# ----------------------------------------------------------------------------
-# Records short WAVs whenever microWakeWord produces a "near-miss": a sliding-
-# window probability that climbed into a configurable band but never crossed
-# the real cutoff. These are the false-negative samples we want for retraining.
-#
-# Capture is gated by the `training_capture_switch` below and the upload
-# endpoint is the `mww_capture_endpoint` substitution at the top of this file.
-# Configure both via Home Assistant (the switch) and your top-level YAML (the
-# substitution).
-mww_training_capture:
-  id: mww_capture
-  micro_wake_word_id: mww
-  microphone:
-    microphone: sat1_mics
-    channels: 1
-  default_lower_cutoff: 0.40
-  pre_buffer_seconds: 2.0
-  post_buffer_ms: 500
-  cooldown_ms: 4000
-  require_vad: false
-  enabled_by_default: false
-  upload_url: ${mww_capture_endpoint}
-  device_name: ${node_name}
-  models:
-    - wake_word_model: hey_haeris
-      lower_cutoff: 0.60
-
 select:
   - platform: template
     id: mww_sensitivity_select
@@ -837,8 +323,7 @@ select:
       # Sets specific wake word probabilities computed for each particular model
       # Note probability cutoffs are set as a quantized uint8 value, each comment has the corresponding floating point cutoff
       # False Accepts per Hour values are tested against all units and channels from the Dinner Party Corpus.
-      # These cutoffs apply only to the specific models included in the firmware: okay_nabu@20241226.3 and hey_jarvis@v2.
-      # hey_haeris keeps the cutoff embedded in its model JSON; this select intentionally does not tune it.
+      # These cutoffs apply only to the specific models included in the firmware: okay_nabu@20241226.3, hey_jarvis@v2, hey_mycroft@v2
       lambda: |-
         if (x == "Slightly sensitive") {
           id(okay_nabu).set_probability_cutoff(217);    // 0.85 -> 0.000 FAPH on DipCo (Manifest's default)

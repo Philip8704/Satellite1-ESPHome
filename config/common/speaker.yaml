@@ -102,13 +102,30 @@ script:
             - tas2780.activate:
                 mode: !lambda 'return id(pd_power_contract) >=9 ? 2 : 0;'
             - lambda: id(tas2780_active) = true;
+            # External routing pins the dac_proxy to line-out so the TAS2780
+            # being "active" is harmless (it never sees signal), but bring
+            # the proxy back to line-out anyway in case tas2780.activate
+            # tripped any internal state on the dac_proxy.
+            - script.execute: apply_external_speaker_routing
 
   - id: activate_internal_speaker
     mode: single
     then:
-      - logger.log: "Activating internal speaker"
-      - script.execute: tas2780_ensure_active
-      - dac_proxy.activate_speaker:
+      - if:
+          condition:
+            lambda: 'return id(external_speaker_routing_on);'
+          then:
+            # While external speaker routing is on, refuse to flip the DAC
+            # back to the internal speaker. The jack-detect on_release
+            # handler calls this when the cable is unplugged; that's the
+            # case where we *most* want to stay on line-out so the TAS2780
+            # never sees signal.
+            - logger.log: "External speaker routing active - leaving DAC on line-out"
+            - script.execute: apply_external_speaker_routing
+          else:
+            - logger.log: "Activating internal speaker"
+            - script.execute: tas2780_ensure_active
+            - dac_proxy.activate_speaker:
 
   - id: activate_line_out
     mode: single
@@ -153,17 +170,7 @@ binary_sensor:
       - script.execute: control_leds
 
     on_release:
-      - if:
-          condition:
-            and:
-              - switch.is_on: external_assist_speaker_switch
-              - lambda: |-
-                  const auto option = id(external_assist_media_player_select).current_option();
-                  return !option.empty() && option != "None" && option != "media_player.none";
-          then:
-            - script.execute: activate_line_out
-          else:
-            - script.execute: activate_internal_speaker
+      - script.execute: activate_internal_speaker
       - lambda: id(jack_unplugged_recently) = true;
       - script.execute: control_leds
       - delay: 200ms

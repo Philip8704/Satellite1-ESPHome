@@ -1,11 +1,3 @@
-substitutions:
-  # Home Assistant TTS engine entity kept for external speaker compatibility.
-  ha_tts_entity_id: tts.edge_tts
-  # LAN base URL HA serves chimes from. Drop matching files into
-  # <HA config>/www/sounds/ if external mode should play local chimes on
-  # the selected Home Assistant media player.
-  external_sound_base: http://homeassistant.local:8123/local/sounds
-
 api:
   id: api_id
   on_client_connected:
@@ -29,23 +21,6 @@ button:
     internal: true
 
 switch:
-  # MWW Training Capture master switch. When ON, the firmware records short
-  # WAVs of near-miss wake-word activations and POSTs them to the companion
-  # capture service for training data. OFF by default.
-  - platform: template
-    id: training_capture_switch
-    name: "Wake word training capture"
-    icon: "mdi:record-rec"
-    entity_category: config
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
-    turn_on_action:
-      - mww_training_capture.enable:
-          id: mww_capture
-    turn_off_action:
-      - mww_training_capture.disable:
-          id: mww_capture
-
   # Wake Word Sound Switch.
   - platform: template
     id: wake_sound
@@ -85,27 +60,6 @@ switch:
       - script.execute: control_leds
     on_turn_off:
       - script.execute: control_leds
-
-sensor:
-  - platform: template
-    id: mww_capture_counter
-    name: "Wake word captures since boot"
-    icon: "mdi:counter"
-    entity_category: diagnostic
-    unit_of_measurement: ""
-    accuracy_decimals: 0
-    update_interval: 30s
-    lambda: 'return (float) id(mww_capture).get_capture_count();'
-
-  - platform: template
-    id: mww_capture_drops
-    name: "Wake word captures dropped"
-    icon: "mdi:cloud-off-outline"
-    entity_category: diagnostic
-    unit_of_measurement: ""
-    accuracy_decimals: 0
-    update_interval: 30s
-    lambda: 'return (float) id(mww_capture).get_dropped_count();'
 
 text_sensor:
   - platform: template

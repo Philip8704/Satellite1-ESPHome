@@ -1,0 +1,295 @@
+# External speaker routing for Music Assistant / HA media_player targets.
+#
+# When the "External Speaker Routing" switch is ON:
+#   - the dac_proxy is pinned to LINE_OUT (PCM5122). With nothing plugged
+#     into the 3.5mm jack the analog signal goes nowhere, so the internal
+#     TAS2780 amplifier never sees audio — no muted-but-running speaker
+#     path. The local mixer/resampler/i2s_audio chain still runs so the
+#     voice_assistant phase state machine keeps tracking TTS timing
+#     locally,
+#   - voice assistant TTS URLs are mirrored to ${external_assist_primary_media_player}
+#     as announcements (Music Assistant handles announcement volume natively),
+#   - UI tones (wake / jack / mute / timer / button / factory-reset) are played
+#     on the same external entity by fetching ${external_sound_base}/<file>,
+#   - the external media_player is ducked to 5% volume during listening so
+#     residual TTS or background music doesn't bleed into the mic, and
+#     restored to ${external_speaker_restore_volume} when listening ends.
+#
+# All substitutions default to empty / safe values in satellite1.base.yaml.
+# With an empty external_assist_primary_media_player the routing scripts
+# silently no-op even if the switch is on, so a flash without the
+# substitutions set produces a functional satellite with the toggle
+# visible-but-inert.
+
+substitutions:
+  # Placeholder default so the homeassistant.sensor entity_id parses at
+  # compile time even when the user hasn't configured an actual target.
+  # external_speaker_configured (below) treats this value as "not set".
+  external_assist_primary_media_player: "media_player.satellite1_unconfigured"
+  external_sound_base: ""
+  # Fallback used by restore_external_after_listening only when we haven't
+  # observed a volume_level from the external player yet (e.g. very first
+  # listening cycle after boot, before the homeassistant.sensor has had a
+  # chance to push a value). Normal operation captures + restores the
+  # pre-duck volume, so the music keeps playing at exactly its original
+  # level without snapshot/scene tricks that would restart the track.
+  external_speaker_restore_volume: "0.5"
+  external_speaker_wake_sound_delay: "1500ms"
+
+globals:
+  # Fast lambda-readable mirror of the switch state. Updated by the switch's
+  # on_turn_on / on_turn_off actions and read by routing scripts so we don't
+  # block on switch lookups inside the audio path.
+  - id: external_speaker_routing_on
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # Set when we've already mirrored a TTS URL to the external player for the
+  # current voice_assistant cycle. Pipeline-streaming TTS fires the URL via
+  # on_intent_progress *before* on_tts_end, while the
+  # assist_satellite.announce / start_conversation flow only fires on_tts_end
+  # (intent_progress never carries a URL for those). The flag lets on_tts_end
+  # serve as a single canonical fallback without double-mirroring streaming
+  # responses. Reset in on_start (pipeline cycle begins) and on_end / on_error
+  # (defensive, also covers announce cycles which skip on_start).
+  - id: external_tts_mirrored_this_cycle
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # Continuously mirrors the external media_player's reported volume_level
+  # via the homeassistant.sensor below. -1.0 sentinel means "not observed
+  # yet" (HA hasn't pushed a value, or the entity doesn't exist because the
+  # user hasn't overridden the substitution).
+  - id: external_player_volume_observed
+    type: float
+    restore_value: no
+    initial_value: '-1.0f'
+  # Snapshot of the player's volume right before duck_external_for_listening
+  # set it to 0.05. restore_external_after_listening writes it back to the
+  # player so background music continues at the exact same level it was at
+  # before the listening cycle — no snapshot/scene needed, so the currently
+  # playing track doesn't restart from the beginning. Reset to -1.0 after
+  # restore so a follow-up listening cycle re-samples the (post-restore)
+  # volume rather than re-using a stale value.
+  - id: external_player_pre_duck_volume
+    type: float
+    restore_value: no
+    initial_value: '-1.0f'
+
+switch:
+  # User-facing toggle. Persisted so the device comes back in whichever mode
+  # the user last selected.
+  - platform: template
+    id: external_speaker_routing
+    name: "External Speaker Routing"
+    icon: "mdi:speaker-wireless"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - lambda: id(external_speaker_routing_on) = true;
+      - script.execute: apply_external_speaker_routing
+    on_turn_off:
+      - lambda: id(external_speaker_routing_on) = false;
+      # apply_external_speaker_routing is a no-op when the toggle is off;
+      # restore the DAC selection here based on the jack-detect state so we
+      # don't have to plumb that logic through two scripts.
+      - if:
+          condition:
+            binary_sensor.is_on: line_out_sensor
+          then:
+            - script.execute: activate_line_out
+          else:
+            - script.execute: activate_internal_speaker
+
+binary_sensor:
+  # Compile-time gate exposed at runtime. If the YAML flasher didn't override
+  # the external_assist_primary_media_player substitution, it stays at the
+  # placeholder default; the routing scripts skip the homeassistant.action
+  # calls entirely rather than firing media_player.play_media against a
+  # non-existent entity (which would log noisy errors in HA every cycle).
+  - platform: template
+    id: external_speaker_configured
+    name: "External Speaker Configured"
+    icon: "mdi:check-network-outline"
+    entity_category: diagnostic
+    lambda: |-
+      return std::string("${external_assist_primary_media_player}") !=
+             std::string("media_player.satellite1_unconfigured");
+
+sensor:
+  # Mirrors the external media_player's volume_level attribute so the duck
+  # script can snapshot the pre-duck value and restore_external_after_listening
+  # can write it back verbatim. This is the snapshot-free alternative to
+  # media_player.snapshot / scene.create — it never touches the player's
+  # playback state, so a track that was mid-playback before STT continues
+  # uninterrupted at its original volume after STT ends.
+  - platform: homeassistant
+    id: external_player_volume_state
+    entity_id: ${external_assist_primary_media_player}
+    attribute: volume_level
+    internal: true
+    on_value:
+      # Volume reports in HA range 0.0-1.0; clamp out NaN/0 garbage so the
+      # restore step doesn't write back a silly value.
+      - lambda: |-
+          if (x >= 0.0f && x <= 1.0f) {
+            id(external_player_volume_observed) = x;
+          }
+
+script:
+  # Applies the current switch state to the internal speaker stack. Called
+  # whenever the switch is toggled and whenever the DAC selection changes
+  # (jack plug/unplug, XMOS flash success, boot).
+  - id: apply_external_speaker_routing
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: 'return id(external_speaker_routing_on);'
+          then:
+            - logger.log: "External speaker routing ON - pinning DAC to line-out"
+            # Pin the dac_proxy to PCM5122 (line-out). The TAS2780 amplifier
+            # is downstream of dac_proxy, so with line-out selected it
+            # receives no signal whether or not the 3.5mm jack has anything
+            # plugged in. Toggling back off is handled by the switch's
+            # on_turn_off, which restores based on jack-detect state.
+            - dac_proxy.activate_line_out:
+
+  # Plays an arbitrary URL on the configured external media_player as an
+  # announcement. Used for both voice-assistant TTS mirroring (URL comes from
+  # the pipeline) and UI tone playback (URL = ${external_sound_base}/<file>).
+  # No-ops silently if routing is off, the media_player substitution is unset,
+  # or the URL is empty.
+  - id: play_on_external
+    mode: queued
+    parameters:
+      url: string
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(external_speaker_routing_on);'
+              - binary_sensor.is_on: external_speaker_configured
+              - lambda: 'return !url.empty();'
+          then:
+            # data: takes plain strings; the dynamic media URL is plumbed
+            # through variables: + data_template: so it works on every
+            # ESPHome version (rather than relying on `!lambda` under
+            # data: which only became reliable on the newest releases).
+            - homeassistant.action:
+                action: media_player.play_media
+                data:
+                  entity_id: "${external_assist_primary_media_player}"
+                  media_content_type: music
+                  announce: "true"
+                data_template:
+                  media_content_id: "{{ url_var }}"
+                variables:
+                  url_var: !lambda 'return url;'
+
+  # Duck the external media_player to 5% volume. Called on_listening so that
+  # any TTS tail (from a satellite assist_satellite.start_conversation /
+  # ask_question flow where the external speaker is still finishing its
+  # announcement) plus any background music can't echo into the satellite
+  # mic during STT. No-ops if routing is off or the entity isn't configured.
+  #
+  # Before changing the player's volume we snapshot the currently observed
+  # volume_level into external_player_pre_duck_volume — that's what
+  # restore_external_after_listening writes back after STT, so music that
+  # was playing pre-listening continues at exactly its original level
+  # without media_player.snapshot / scene.create (which restart the
+  # currently-playing track on most players).
+  - id: duck_external_for_listening
+    mode: queued
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(external_speaker_routing_on);'
+              - binary_sensor.is_on: external_speaker_configured
+          then:
+            - lambda: |-
+                float observed = id(external_player_volume_observed);
+                if (observed >= 0.0f && observed <= 1.0f && observed > 0.05f) {
+                  // Don't capture the ducked volume itself if the script
+                  // is somehow re-entered before restore — observed must
+                  // be strictly above the duck level we're about to set.
+                  id(external_player_pre_duck_volume) = observed;
+                }
+            - homeassistant.action:
+                action: media_player.volume_set
+                data:
+                  entity_id: "${external_assist_primary_media_player}"
+                  volume_level: "0.05"
+
+  # Restore the external media_player's volume after listening completes.
+  # Uses the pre-duck snapshot captured above. Falls back to the
+  # ${external_speaker_restore_volume} substitution only when we never
+  # observed a pre-duck value (first listening cycle after boot before HA
+  # pushed a state, or the entity isn't reachable).
+  - id: restore_external_after_listening
+    mode: queued
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(external_speaker_routing_on);'
+              - binary_sensor.is_on: external_speaker_configured
+          then:
+            - homeassistant.action:
+                action: media_player.volume_set
+                data:
+                  entity_id: "${external_assist_primary_media_player}"
+                data_template:
+                  volume_level: "{{ vol }}"
+                variables:
+                  vol: !lambda |-
+                    float v = id(external_player_pre_duck_volume);
+                    if (v < 0.0f || v > 1.0f) {
+                      v = atof("${external_speaker_restore_volume}");
+                    }
+                    char buf[16];
+                    snprintf(buf, sizeof(buf), "%.3f", v);
+                    return std::string(buf);
+            # Reset the snapshot so the next listening cycle re-samples
+            # the (post-restore) volume rather than re-using a stale one.
+            - lambda: 'id(external_player_pre_duck_volume) = -1.0f;'
+
+  # Convenience wrapper for UI tones. Maps the audio_file ID used by the local
+  # play_sound script (e.g. "wake_word_triggered_sound") to a remote filename
+  # under ${external_sound_base}/. Filenames mirror the upstream
+  # fph-firmware-assets layout — drop the same set of files under the path the
+  # external_sound_base substitution points at to support routed UI tones.
+  - id: play_ui_sound_on_external
+    mode: queued
+    parameters:
+      sound_file: string
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(external_speaker_routing_on);'
+              - binary_sensor.is_on: external_speaker_configured
+              - lambda: 'return std::string("${external_sound_base}") != std::string("");'
+          then:
+            - script.execute:
+                id: play_on_external
+                url: !lambda |-
+                  // Map audio_file IDs declared in common/media_player.yaml to
+                  // the on-disk filenames the upstream sounds bucket uses.
+                  std::string base = "${external_sound_base}";
+                  if (sound_file == "wake_word_triggered_sound")     return base + "/wake_word_triggered.flac";
+                  if (sound_file == "jack_connected_sound")          return base + "/jack_connected.flac";
+                  if (sound_file == "jack_disconnected_sound")       return base + "/jack_disconnected.flac";
+                  if (sound_file == "mute_switch_on_sound")          return base + "/mute_switch_on.flac";
+                  if (sound_file == "mute_switch_off_sound")         return base + "/mute_switch_off.flac";
+                  if (sound_file == "timer_finished_sound")          return base + "/timer_finished.flac";
+                  if (sound_file == "center_button_press_sound")     return base + "/center_button_press.flac";
+                  if (sound_file == "center_button_double_press_sound") return base + "/center_button_double_press.flac";
+                  if (sound_file == "center_button_triple_press_sound") return base + "/center_button_triple_press.flac";
+                  if (sound_file == "center_button_long_press_sound") return base + "/center_button_long_press.flac";
+                  if (sound_file == "factory_reset_initiated_sound") return base + "/factory_reset_initiated.mp3";
+                  if (sound_file == "factory_reset_cancelled_sound") return base + "/factory_reset_cancelled.mp3";
+                  if (sound_file == "factory_reset_confirmed_sound") return base + "/factory_reset_confirmed.mp3";
+                  return std::string("");

@@ -1,0 +1,103 @@
+# micro_wake_word near-miss training capture.
+#
+# The mww_training_capture component subscribes to the same microphone stream
+# as micro_wake_word and keeps a rolling pre-buffer (2 s by default) in PSRAM.
+# Whenever any non-internal MWW model's sliding-window probability crosses
+# ${mww_capture_lower_cutoff} (default 0.7) but did not actually trigger the
+# assistant, a 16-bit/16 kHz mono WAV of pre-buffer + post-buffer is POSTed to
+# ${mww_capture_endpoint}.
+#
+# Two gates must be true for an upload to happen:
+#   1. the "Wake Word Training Capture" switch is ON
+#   2. ${mww_capture_endpoint} is non-empty
+#
+# With an empty list of explicit models the component auto-registers every
+# non-internal wake-word model exposed by micro_wake_word, so the user's
+# custom hey_haeris (and any other models) participate automatically without
+# the framework needing to know the model id ahead of time.
+
+substitutions:
+  mww_capture_endpoint: ""
+  mww_capture_lower_cutoff: "0.7"
+
+mww_training_capture:
+  id: mww_capture
+  micro_wake_word_id: mww
+  microphone:
+    microphone: sat1_mics
+    channels: 1
+    gain_factor: 6
+  default_lower_cutoff: ${mww_capture_lower_cutoff}
+  pre_buffer_seconds: 2.0
+  post_buffer_ms: 500
+  cooldown_ms: 4000
+  require_vad: true
+  enabled_by_default: false
+  upload_url: ${mww_capture_endpoint}
+  device_name: ${node_name}
+  on_near_miss_detected:
+    - logger.log:
+        format: "MWW near-miss captured: %s (max=%.2f avg=%.2f)"
+        args: ["wake_word.c_str()", "max_prob", "avg_prob"]
+
+switch:
+  # User-facing toggle. Persisted across reboots so a device that was
+  # enrolled in the training program stays enrolled.
+  - platform: template
+    id: mww_capture_enabled
+    name: "Wake Word Training Capture"
+    icon: "mdi:waveform"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - mww_training_capture.enable: mww_capture
+      - logger.log: "MWW training capture enabled"
+    on_turn_off:
+      - mww_training_capture.disable: mww_capture
+      - logger.log: "MWW training capture disabled"
+
+binary_sensor:
+  # Visible in HA so dashboards can show "capture configured but switch off"
+  # vs "switch on but endpoint missing" without having to inspect the flash.
+  - platform: template
+    id: mww_capture_configured
+    name: "Wake Word Training Capture Configured"
+    icon: "mdi:cloud-upload-outline"
+    entity_category: diagnostic
+    lambda: |-
+      return std::string("${mww_capture_endpoint}") != std::string("");
+
+sensor:
+  # Diagnostic counters from the component. Useful when debugging whether
+  # near-misses are firing at all (uploads counter) vs firing but the addon
+  # is unreachable (drops counter).
+  - platform: template
+    id: mww_capture_count_sensor
+    name: "Wake Word Captures Uploaded"
+    icon: "mdi:counter"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: 'return (float) id(mww_capture).get_capture_count();'
+
+  - platform: template
+    id: mww_capture_dropped_sensor
+    name: "Wake Word Captures Dropped"
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: 'return (float) id(mww_capture).get_dropped_count();'
+
+text_sensor:
+  # The last near-miss the component saw. Convenient when tuning the cutoff:
+  # toggle on for a few minutes, glance at this entity, see which model is
+  # getting close to firing.
+  - platform: template
+    id: mww_capture_last_wake_word
+    name: "Last Wake Word Near-Miss"
+    icon: "mdi:ear-hearing"
+    entity_category: diagnostic
+    update_interval: 30s
+    lambda: 'return id(mww_capture).get_last_wake_word();'

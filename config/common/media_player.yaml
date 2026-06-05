@@ -51,67 +51,6 @@ media_source:
     id: http_media_source
     buffer_size: 500000
 
-select:
-  - platform: template
-    name: External Assist Media Player
-    id: external_assist_media_player_select
-    icon: "mdi:speaker-wireless"
-    entity_category: config
-    options:
-      - "${external_assist_primary_media_player}"
-    initial_option: "${external_assist_primary_media_player}"
-    optimistic: true
-    restore_value: true
-
-sensor:
-  - platform: homeassistant
-    id: external_assist_selected_media_player_volume
-    entity_id: ${external_assist_primary_media_player}
-    attribute: volume_level
-    internal: true
-
-switch:
-  - platform: template
-    id: external_assist_speaker_switch
-    name: External Assist Speaker
-    icon: "mdi:speaker-wireless"
-    entity_category: config
-    optimistic: true
-    restore_mode: ${external_assist_speaker_restore_mode}
-    turn_on_action:
-      - switch.template.publish:
-          id: external_assist_speaker_switch
-          state: ON
-      - if:
-          condition:
-            lambda: |-
-              const auto option = id(external_assist_media_player_select).current_option();
-              return !option.empty() && option != "None" && option != "media_player.none";
-          then:
-            - script.execute: activate_line_out
-          else:
-            - if:
-                condition:
-                  binary_sensor.is_on: line_out_sensor
-                then:
-                  - script.execute: activate_line_out
-                else:
-                  - script.execute: activate_internal_speaker
-      - media_player.stop:
-          id: external_media_player
-          announcement: true
-    turn_off_action:
-      - switch.template.publish:
-          id: external_assist_speaker_switch
-          state: OFF
-      - if:
-          condition:
-            binary_sensor.is_on: line_out_sensor
-          then:
-            - script.execute: activate_line_out
-          else:
-            - script.execute: activate_internal_speaker
-
 media_player:
   - platform: speaker_source
     id: external_media_player
@@ -143,35 +82,21 @@ media_player:
       - script.execute: control_leds
     # Apply audio ducking when an announcement starts
     on_announcement:
-      - if:
-          condition:
-            or:
-              - switch.is_off: external_assist_speaker_switch
-              - lambda: |-
-                  const auto option = id(external_assist_media_player_select).current_option();
-                  return option.empty() || option == "None" || option == "media_player.none";
-          then:
-            - mixer_speaker.apply_ducking:
-                id: media_mixing_input
-                decibel_reduction: 20
-                duration: 0.0s
+      - mixer_speaker.apply_ducking:
+          id: media_mixing_input
+          decibel_reduction: 20
+          duration: 0.0s
 
     # Restore audio ducking when not actively playing announcements or running voice assistant
     on_state:
       - if:
           condition:
             and:
-              - or:
-                  - switch.is_off: external_assist_speaker_switch
-                  - lambda: |-
-                      const auto option = id(external_assist_media_player_select).current_option();
-                      return option.empty() || option == "None" || option == "media_player.none";
               - switch.is_off: timer_ringing
               - not:
                   voice_assistant.is_running:
               - not:
-                  media_player.is_announcing:
-                    id: external_media_player
+                  media_player.is_announcing: external_media_player
           then:
             - mixer_speaker.apply_ducking:
                 id: media_mixing_input
@@ -180,6 +105,17 @@ media_player:
 
 script:
   # Script executed when we want to play sounds on the device.
+  #
+  # Two playback paths:
+  #   - local (default): kicks the embedded audio_file off through the
+  #     speaker_source media_player as an announcement.
+  #   - external (when "External Speaker Routing" is on): forwards the
+  #     equivalent remote URL under ${external_sound_base} to the configured
+  #     HA media_player. The local path is also kicked in this case so the
+  #     local media_player still announces (silently, since the DAC is muted)
+  #     — this keeps the on_state/on_announcement triggers firing so LED
+  #     animations, ducking, and the wake-sound -> voice_assistant.start
+  #     timing in voice_assistant.yaml stay identical between modes.
   - id: play_sound
     parameters:
       priority: bool
@@ -187,90 +123,25 @@ script:
     then:
       - if:
           condition:
-            and:
-              - switch.is_on: external_assist_speaker_switch
-              - lambda: |-
-                  const auto option = id(external_assist_media_player_select).current_option();
-                  return !option.empty() && option != "None" && option != "media_player.none";
+            lambda: return priority;
           then:
-            - script.execute: activate_line_out
-            - if:
-                condition:
-                  lambda: |-
-                    const auto option = id(external_assist_media_player_select).current_option();
-                    return !option.empty() && option != "None" && option != "media_player.none";
-                then:
-                  - if:
-                      condition:
-                        lambda: return priority;
-                      then:
-                        - homeassistant.action:
-                            action: media_player.media_stop
-                            data:
-                              entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                  - homeassistant.action:
-                      action: media_player.play_media
-                      data:
-                        entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                      data_template:
-                        announce: "{{ true }}"
-                        media: !lambda |-
-                          std::string file_name = sound_file;
-                          if (sound_file == "factory_reset_initiated_sound") {
-                            file_name = "factory_reset_initiated.mp3";
-                          } else if (sound_file == "factory_reset_cancelled_sound") {
-                            file_name = "factory_reset_cancelled.mp3";
-                          } else if (sound_file == "factory_reset_confirmed_sound") {
-                            file_name = "factory_reset_confirmed.mp3";
-                          } else if (sound_file.size() > 6 && sound_file.substr(sound_file.size() - 6) == "_sound") {
-                            file_name = sound_file.substr(0, sound_file.size() - 6) + ".flac";
-                          }
-                          std::string url = std::string("${external_sound_base}/") + file_name;
-                          std::string entity = id(external_assist_media_player_select).current_option();
-                          auto escape = [](std::string value) {
-                            size_t pos = 0;
-                            while ((pos = value.find("\\", pos)) != std::string::npos) {
-                              value.replace(pos, 1, "\\\\");
-                              pos += 2;
-                            }
-                            pos = 0;
-                            while ((pos = value.find("'", pos)) != std::string::npos) {
-                              value.replace(pos, 1, "\\'");
-                              pos += 2;
-                            }
-                            return value;
-                          };
-                          url = escape(url);
-                          entity = escape(entity);
-                          return "{{ {'media_content_id': '" + url + "', 'media_content_type': 'music', 'metadata': {'navigateIds': [{}, {'media_content_type': '', 'media_content_id': '__MANUAL_ENTRY__'}], 'browse_entity_id': '" + entity + "'}} }}";
-                      on_error:
-                        - logger.log:
-                            level: WARN
-                            format: "External play_media sound failed: %s"
-                            args: ['error.c_str()']
-          else:
-            - if:
-                condition:
-                  binary_sensor.is_on: line_out_sensor
-                then:
-                  - script.execute: activate_line_out
-                else:
-                  - script.execute: activate_internal_speaker
-            - if:
-                condition:
-                  lambda: return priority;
-                then:
-                  - media_player.stop:
-                      id: external_media_player
-                      announcement: true
-            - lambda: |-
-                if ( (id(external_media_player).state != media_player::MediaPlayerState::MEDIA_PLAYER_STATE_ANNOUNCING ) || priority) {
-                  id(external_media_player)
-                    ->make_call()
-                    .set_media_url("audio-file://" + sound_file)
-                    .set_announcement(true)
-                    .perform();
-                }
+            - media_player.stop:
+                id: external_media_player
+                announcement: true
+      - lambda: |-
+          if ( (id(external_media_player).state != media_player::MediaPlayerState::MEDIA_PLAYER_STATE_ANNOUNCING ) || priority) {
+            id(external_media_player)
+              ->make_call()
+              .set_media_url("audio-file://" + sound_file)
+              .set_announcement(true)
+              .perform();
+          }
+      # Mirror UI tone to the external media_player. play_ui_sound_on_external
+      # internally gates on the routing switch + configured-substitution
+      # binary_sensor, so this is a no-op when routing is off.
+      - script.execute:
+          id: play_ui_sound_on_external
+          sound_file: !lambda 'return sound_file;'
 
   # Script to increased/decreased volume
   - id: control_volume
@@ -281,35 +152,13 @@ script:
       - delay: 16ms
       - if:
           condition:
-            and:
-              - switch.is_on: external_assist_speaker_switch
-              - lambda: |-
-                  const auto option = id(external_assist_media_player_select).current_option();
-                  return !option.empty() && option != "None" && option != "media_player.none";
+            lambda: return increase_volume;
           then:
-            - if:
-                condition:
-                  lambda: return increase_volume;
-                then:
-                  - homeassistant.action:
-                      action: media_player.volume_up
-                      data:
-                        entity_id: !lambda return id(external_assist_media_player_select).current_option();
-                else:
-                  - homeassistant.action:
-                      action: media_player.volume_down
-                      data:
-                        entity_id: !lambda return id(external_assist_media_player_select).current_option();
+            - media_player.volume_up:
+                id: external_media_player
           else:
-            - if:
-                condition:
-                  lambda: return increase_volume;
-                then:
-                  - media_player.volume_up:
-                      id: external_media_player
-                else:
-                  - media_player.volume_down:
-                      id: external_media_player
+            - media_player.volume_down:
+                id: external_media_player
       - script.execute: control_leds
       - delay: 2s
       - lambda: id(volume_buttons_touched) = false;

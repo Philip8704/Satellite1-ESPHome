@@ -1,8 +1,6 @@
 __pycache__
 *.pyc
 .venv/
-.pipdeps/
-.migration_backup_*/
 *.egg-info/
 
 .esphome_repo
