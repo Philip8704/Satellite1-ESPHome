@@ -76,6 +76,13 @@ class StreamingModel {
   bool load_model_();
   /// @brief Returns true if successfully registered the streaming model's TensorFlow operations
   bool register_streaming_ops_(tflite::MicroMutableOpResolver<20> &op_resolver);
+  /// @brief Tries the manifest's tensor_arena_size_, then 1.5x, then 2x, returning the smallest
+  /// size that AllocateTensors() actually accepts (or 0 if none work). Backported from upstream
+  /// ESPHome 2026.4.5 — the manifest-declared arena size from microWakeWord-trained models is
+  /// platform/tflite-version-specific and is now often slightly under what the current
+  /// esp-nn + TFLite Micro require. Without this probe, models built against an older ESPHome
+  /// (e.g. 2024.7) fail AllocateTensors() at runtime even with PSRAM available.
+  size_t probe_arena_size_();
 
   tflite::MicroMutableOpResolver<20> streaming_op_resolver_;
 
@@ -97,6 +104,9 @@ class StreamingModel {
 
   size_t last_n_index_{0};
   size_t tensor_arena_size_;
+  /// Set to true once probe_arena_size_() has resolved a working size for this model.
+  /// Prevents re-running the (expensive) probe on every load_model_() invocation.
+  bool tensor_arena_size_probed_{false};
   std::vector<uint8_t> recent_streaming_probabilities_;
 
   const uint8_t *model_start_;

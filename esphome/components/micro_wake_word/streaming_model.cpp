@@ -29,14 +29,10 @@ void VADModel::log_model_config() {
 bool StreamingModel::load_model_() {
   RAMAllocator<uint8_t> arena_allocator;
 
-  if (this->tensor_arena_ == nullptr) {
-    this->tensor_arena_ = arena_allocator.allocate(this->tensor_arena_size_);
-    if (this->tensor_arena_ == nullptr) {
-      ESP_LOGE(TAG, "Could not allocate the streaming model's tensor arena.");
-      return false;
-    }
-  }
-
+  // var_arena must come BEFORE the tensor_arena probe — probe_arena_size_()
+  // reuses this->ma_ / this->mrv_ for its trial interpreters, which require
+  // var_arena to already be allocated. (Upstream ESPHome reorders this same
+  // way; vendoring used to put tensor_arena first.)
   if (this->var_arena_ == nullptr) {
     this->var_arena_ = arena_allocator.allocate(STREAMING_MODEL_VARIABLE_ARENA_SIZE);
     if (this->var_arena_ == nullptr) {
@@ -51,6 +47,33 @@ bool StreamingModel::load_model_() {
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     ESP_LOGE(TAG, "Streaming model's schema is not supported");
     return false;
+  }
+
+  // Probe for the actual required tensor arena size. The manifest's
+  // tensor_arena_size is what the model was trained against, but newer
+  // esp-nn / TFLite Micro versions may need more (or less) — try the
+  // manifest size, then 1.5x, then 2x. Resolves the long-standing
+  // "Failed to allocate tensors" issue for models trained against older
+  // ESPHome releases (e.g. minimum_esphome_version: 2024.7.0). Backported
+  // from upstream ESPHome 2026.4.5.
+  if (!this->tensor_arena_size_probed_) {
+    size_t probed_size = this->probe_arena_size_();
+    if (probed_size > 0) {
+      ESP_LOGD(TAG, "Probed tensor arena size: %zu bytes (manifest was %zu)", probed_size,
+               this->tensor_arena_size_);
+      this->tensor_arena_size_ = probed_size;
+    } else {
+      ESP_LOGW(TAG, "Arena size probe failed, using manifest size: %zu bytes", this->tensor_arena_size_);
+    }
+    this->tensor_arena_size_probed_ = true;
+  }
+
+  if (this->tensor_arena_ == nullptr) {
+    this->tensor_arena_ = arena_allocator.allocate(this->tensor_arena_size_);
+    if (this->tensor_arena_ == nullptr) {
+      ESP_LOGE(TAG, "Could not allocate the streaming model's tensor arena.");
+      return false;
+    }
   }
 
   if (this->interpreter_ == nullptr) {
@@ -92,6 +115,77 @@ bool StreamingModel::load_model_() {
   this->loaded_ = true;
   this->reset_probabilities();
   return true;
+}
+
+size_t StreamingModel::probe_arena_size_() {
+  RAMAllocator<uint8_t> arena_allocator;
+
+  // Backported verbatim from upstream ESPHome 2026.4.5's
+  // micro_wake_word/streaming_model.cpp. Try the manifest size first, then
+  // 1.5x, then 2x. Different platforms and different versions of the esp-nn
+  // library require different amounts of memory, so the manifest size may
+  // not always be correct, and probing finds the actual required size for
+  // the current build. All sizes 16-byte aligned.
+  size_t attempt_sizes[] = {(this->tensor_arena_size_ + 15) & ~15, (this->tensor_arena_size_ * 3 / 2 + 15) & ~15,
+                            (this->tensor_arena_size_ * 2 + 15) & ~15};
+
+  for (size_t attempt_size : attempt_sizes) {
+    uint8_t *probe_arena = arena_allocator.allocate(attempt_size);
+    if (probe_arena == nullptr) {
+      continue;
+    }
+
+    // Verify the model works at all with this arena size
+    auto probe_interpreter = make_unique<tflite::MicroInterpreter>(
+        tflite::GetModel(this->model_start_), this->streaming_op_resolver_, probe_arena, attempt_size, this->mrv_);
+
+    if (probe_interpreter->AllocateTensors() != kTfLiteOk) {
+      probe_interpreter.reset();
+      arena_allocator.deallocate(probe_arena, attempt_size);
+      // Recreate the allocator + resource variables so the next attempt
+      // doesn't reuse polluted state from this failed allocation.
+      this->ma_ = tflite::MicroAllocator::Create(this->var_arena_, STREAMING_MODEL_VARIABLE_ARENA_SIZE);
+      this->mrv_ = tflite::MicroResourceVariables::Create(this->ma_, 20);
+      continue;
+    }
+
+    // Try to shrink the arena down toward the actually-used bytes so we
+    // don't permanently hold the larger probe size when the model only
+    // needs a small fraction of it. Start with arena_used_bytes() + 16
+    // (16-byte aligned); if that works use it, otherwise binary-search up
+    // to the working full size.
+    size_t lower = (probe_interpreter->arena_used_bytes() + 16 + 15) & ~15;
+    probe_interpreter.reset();
+    this->ma_ = tflite::MicroAllocator::Create(this->var_arena_, STREAMING_MODEL_VARIABLE_ARENA_SIZE);
+    this->mrv_ = tflite::MicroResourceVariables::Create(this->ma_, 20);
+
+    size_t upper = attempt_size;
+
+    while (lower < upper) {
+      auto test_interpreter = make_unique<tflite::MicroInterpreter>(
+          tflite::GetModel(this->model_start_), this->streaming_op_resolver_, probe_arena, lower, this->mrv_);
+
+      bool ok = test_interpreter->AllocateTensors() == kTfLiteOk;
+
+      test_interpreter.reset();
+      this->ma_ = tflite::MicroAllocator::Create(this->var_arena_, STREAMING_MODEL_VARIABLE_ARENA_SIZE);
+      this->mrv_ = tflite::MicroResourceVariables::Create(this->ma_, 20);
+
+      if (ok) {
+        // Found a working size smaller than the full arena.
+        upper = lower + 16;  // Pad by 16 bytes for safety.
+        break;
+      }
+
+      // Walk the lower bound toward the midpoint until the test interpreter accepts it.
+      lower = ((lower + upper) / 2 + 15) & ~15;
+    }
+
+    arena_allocator.deallocate(probe_arena, attempt_size);
+    return upper;
+  }
+
+  return 0;
 }
 
 void StreamingModel::unload_model() {
