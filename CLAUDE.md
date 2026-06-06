@@ -60,6 +60,7 @@ Each file is a self-contained feature slice with its own globals/scripts/compone
 - **`wifi_improv.yaml`** — Default Wi-Fi + improv-over-BLE provisioning. The top-level `satellite1.yaml` adds `on_client_connected` waits for BLE + memory flasher to finish before the voice assistant connects.
 - **`external_speaker.yaml`** — External-speaker routing framework (see "External speaker routing & MWW capture" below).
 - **`mww_capture.yaml`** — Near-miss training capture (see same section).
+- **`xvf_control.yaml`** — XMOS XVF DSP runtime control plane (beamforming, AEC/AGC/NS tuning, DOA, mic gain). **Opt-in, not loaded by base.yaml** — requires the Phase 3 custom XMOS firmware (see "XVF DSP control plane" section below).
 - **`debug.yaml`** / **`developer.yaml`** — opt-in extras (memory/wifi/xmos debug, dev-only switches).
 
 When you add a feature, decide whether it belongs as a new `common/*.yaml` package (then include it from `satellite1.base.yaml`) or as a substitution-overridable block — user YAML can append to lists from the base package, override substitutions, or `!remove` individual entities (see how `mww_sensitivity_select` is removed in the user-YAML example at the top of the goal in this conversation).
@@ -156,6 +157,41 @@ Configures the `mww_training_capture` custom component (vendored at `esphome/com
 Key behavior — with an empty explicit `models:` list, the component **auto-registers every non-internal model exposed by `micro_wake_word`** at setup (see `mww_training_capture.cpp:74-82`). This is why the framework can ship without naming `hey_haeris` (or any other user-defined wake word) — the user's YAML adds the model under `micro_wake_word:` and capture picks it up automatically with the default 0.7 cutoff.
 
 The companion FastAPI add-on lives under `miscellaneous/tools/mww_training_capture/addon/`.
+
+## XVF DSP control plane (`xvf_control` — Phase 2 scaffolding for Phase 3 XMOS work)
+
+[esphome/components/xvf_control/](esphome/components/xvf_control/) plus the opt-in [config/common/xvf_control.yaml](config/common/xvf_control.yaml) package implement the ESP32 side of a beamforming / AEC / AGC / NS runtime control plane. The wire protocol is defined in [docs/xmos_dsp_control_protocol.md](docs/xmos_dsp_control_protocol.md) — that document is the canonical contract.
+
+**Three-phase split** — important for understanding what works against which firmware:
+
+- **Phase 1 — substitution-driven tuning knobs (works with stock FPH XMOS).** `mic_gain_factor`, `va_noise_suppression_level`, `va_auto_gain`, `va_volume_multiplier` in [satellite1.base.yaml](config/satellite1.base.yaml). Pure ESPHome side; no XMOS dependency. Always loaded.
+- **Phase 2 — `xvf_control` component + HA entities (opt-in, requires Phase 3 firmware).** Adds the C++ `XvfControl` class talking to the audio servicer at RESID `0xE0` and a YAML package exposing the entities (number/select/sensor/switch). The component **probes capabilities at boot** by reading `CMD_CAPABILITY_FLAGS` + `CMD_FW_FEATURE_VERSION`; if the XMOS returns zeros (stock firmware doesn't implement the servicer), `is_servicer_present()` stays false and every setter is a guarded no-op. **Do not include `xvf_control.yaml` in a flash YAML unless the XMOS firmware implements the servicer** — the entities work but don't actually do anything, which is confusing UX.
+- **Phase 3 — custom XMOS firmware (not in this repo).** Fork [github.com/FutureProofHomes/Satellite1-XMOS](https://github.com/FutureProofHomes/Satellite1-XMOS), add a new `src/audio/audio_servicer.{c,h}` registered at RESID `0xE0`, add a beamforming stage to a forked pipeline variant (`audio_pipelines/reference/beamforming/`). Spec is in `docs/xmos_dsp_control_protocol.md`. Build with XMOS XTC Tools 15.x, host the `.factory.bin`+`.md5`, override `xmos_fw_version` / `xmos_fw_image_url` / `xmos_fw_md5_url` substitutions in the flash YAML, reflash.
+
+**SPI command map** ([esphome/components/satellite1/satellite1.h](esphome/components/satellite1/satellite1.h)):
+
+```
+AUDIO_SERVICER_RESID = 0xE0          // new in Phase 3 firmware
+audio_cmd::CAPABILITY_FLAGS    = 110 // R/O u32 bitmask
+audio_cmd::FW_FEATURE_VERSION  = 111 // R/O 4 bytes maj.min.pat.0
+audio_cmd::BEAM_MODE           = 112 // R/W 1 byte (0=fixed,1=adaptive,2=tracking)
+audio_cmd::BEAM_ANGLE          = 113 // R/W i16 deg -180..+180
+audio_cmd::DOA_ANGLE           = 114 // R/O i16 deg
+audio_cmd::DOA_CONFIDENCE      = 115 // R/O u8 0..255
+audio_cmd::AEC_MODE            = 116 // R/W 1 byte (0=bypass,1=linear,2=lin+residual)
+audio_cmd::AEC_REF_GAIN_DB     = 117 // R/W i8 dB -24..+12
+audio_cmd::AGC_ENABLE          = 118 // R/W bool
+audio_cmd::AGC_TARGET_DBFS     = 119 // R/W i8 dBFS -60..0
+audio_cmd::NS_ENABLE           = 120 // R/W bool
+audio_cmd::NS_LEVEL            = 121 // R/W u8 0..3
+audio_cmd::MIC_GAIN_L          = 122 // R/W i8 dB -12..+24
+audio_cmd::MIC_GAIN_R          = 123 // R/W i8 dB -12..+24
+audio_cmd::PIPELINE_STATS      = 124 // R/O 16-byte packed struct
+```
+
+**Capability bits** in `audio_capability::` — `BEAM_FIXED`, `BEAM_ADAPTIVE`, `BEAM_TRACKING`, `DOA_REPORTING`, `AEC_TUNING`, `AGC_TUNING`, `NS_TUNING`, `MIC_GAIN_RUNTIME`, `PIPELINE_STATS_AVAILABLE`. Each setter in `XvfControl` gates on the matching bit, so a Phase 3 firmware can ship with partial features (e.g. beam control without DOA reporting) and the ESPHome side cleanly hides the inapplicable entities.
+
+When extending the protocol: append new command IDs (don't renumber), bump `FW_FEATURE_VERSION`, add a new capability flag bit, and bump version in `xmos_dsp_control_protocol.md`. Backward-compat is straightforward because the capability probe drives all entity visibility.
 
 ### External components — both lists must match
 

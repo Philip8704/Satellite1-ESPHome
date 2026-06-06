@@ -1,0 +1,324 @@
+# XMOS XVF DSP runtime control plane.
+#
+# Exposes the audio servicer (RESID 0xE0) command surface as HA entities:
+# beam mode / angle / DOA reporting, AEC mode + reference gain, AGC enable
+# and target, NS enable and level, per-channel mic gain, and a pipeline
+# stats sensor block (DSP load + clip counters).
+#
+# ⚠ This file is OPT-IN. The default satellite1.base.yaml does NOT include
+# it because every entity here requires the Phase 3 custom XMOS firmware
+# (docs/xmos_dsp_control_protocol.md) to function. Including this package
+# against the stock FPH satellite1_firmware_fixed_delay.factory.bin
+# produces a satellite with HA entities that won't take effect — confusing
+# UX. Add this include in your flash YAML only after you've flashed a
+# Phase 3 XMOS firmware that implements the audio servicer.
+#
+# Including in a flash YAML:
+#   packages:
+#     FutureProofHomes.Satellite1:
+#       files:
+#         - config/satellite1.base.yaml
+#         - config/common/xvf_control.yaml        # ← add this
+#
+# When the XMOS firmware doesn't implement the servicer the
+# `XVF Audio Servicer Present` binary_sensor stays OFF and all the runtime
+# entities self-report unavailable via lambda checks of
+# `id(xvf).is_servicer_present()`.
+
+xvf_control:
+  id: xvf
+  # Schema key is `satellite1` (matches CONF_SATELLITE1 = "satellite1" in
+  # esphome/components/satellite1/satellite1.py — same pattern the
+  # memory_flasher subcomponent uses for cross-component refs).
+  satellite1: satellite1_id
+  doa_poll_interval: 500ms
+  on_capability_probed:
+    - logger.log:
+        level: INFO
+        format: "XVF audio servicer capability probe complete: flags=0x%08X"
+        args: ['caps']
+
+binary_sensor:
+  # Capability probe result. Goes ON once after boot if the XMOS firmware
+  # answers a FW_FEATURE_VERSION or CAPABILITY_FLAGS read with a non-zero
+  # response. HA dashboards can hide / gray out the rest of the XVF
+  # entities while this is OFF.
+  - platform: template
+    id: xvf_servicer_present
+    name: "XVF Audio Servicer Present"
+    icon: "mdi:chip"
+    entity_category: diagnostic
+    lambda: 'return id(xvf).is_servicer_present();'
+
+  # One binary sensor per capability bit so HA automations can route around
+  # firmware features that aren't compiled in. Lambda reads are cheap —
+  # the value is cached on the ESP after the probe.
+  - platform: template
+    id: xvf_cap_beam_fixed
+    name: "XVF Beam Fixed Supported"
+    entity_category: diagnostic
+    icon: "mdi:axis-arrow"
+    lambda: 'return id(xvf).has_capability(esphome::satellite1::audio_capability::BEAM_FIXED);'
+  - platform: template
+    id: xvf_cap_beam_adaptive
+    name: "XVF Beam Adaptive Supported"
+    entity_category: diagnostic
+    icon: "mdi:vector-radius"
+    lambda: 'return id(xvf).has_capability(esphome::satellite1::audio_capability::BEAM_ADAPTIVE);'
+  - platform: template
+    id: xvf_cap_beam_tracking
+    name: "XVF Beam Tracking Supported"
+    entity_category: diagnostic
+    icon: "mdi:target-account"
+    lambda: 'return id(xvf).has_capability(esphome::satellite1::audio_capability::BEAM_TRACKING);'
+  - platform: template
+    id: xvf_cap_doa
+    name: "XVF DOA Reporting Supported"
+    entity_category: diagnostic
+    icon: "mdi:compass"
+    lambda: 'return id(xvf).has_capability(esphome::satellite1::audio_capability::DOA_REPORTING);'
+
+select:
+  # Beam-steering policy. "Tracking" is the sweet spot — adaptive
+  # beamformer continuously re-aimed at the current DOA estimate, so the
+  # null in the polar pattern moves to suppress interferers while the
+  # main lobe follows the talker.
+  - platform: template
+    id: xvf_beam_mode
+    name: "Beam Mode"
+    icon: "mdi:axis-z-rotate-counterclockwise"
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    options:
+      - "Fixed (0°)"
+      - "Adaptive"
+      - "Tracking (recommended)"
+    initial_option: "Tracking (recommended)"
+    on_value:
+      - lambda: |-
+          if (!id(xvf).is_servicer_present()) return;
+          esphome::satellite1::BeamMode m = esphome::satellite1::BeamMode::TRACKING;
+          if (x == "Fixed (0°)") m = esphome::satellite1::BeamMode::FIXED;
+          else if (x == "Adaptive") m = esphome::satellite1::BeamMode::ADAPTIVE;
+          id(xvf).set_beam_mode(m);
+
+  - platform: template
+    id: xvf_aec_mode
+    name: "AEC Mode"
+    icon: "mdi:tune-vertical"
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    options:
+      - "Bypass"
+      - "Linear"
+      - "Linear + Residual"
+    initial_option: "Linear + Residual"
+    on_value:
+      - lambda: |-
+          if (!id(xvf).is_servicer_present()) return;
+          esphome::satellite1::AecMode m = esphome::satellite1::AecMode::LINEAR_PLUS_RESIDUAL;
+          if (x == "Bypass") m = esphome::satellite1::AecMode::BYPASS;
+          else if (x == "Linear") m = esphome::satellite1::AecMode::LINEAR;
+          id(xvf).set_aec_mode(m);
+
+  - platform: template
+    id: xvf_ns_level
+    name: "Noise Suppression Level"
+    icon: "mdi:waveform"
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    options:
+      - "Off (NS bypass)"
+      - "Light"
+      - "Moderate (recommended)"
+      - "Aggressive"
+      - "Maximum"
+    initial_option: "Moderate (recommended)"
+    on_value:
+      - lambda: |-
+          if (!id(xvf).is_servicer_present()) return;
+          if (x == "Off (NS bypass)") {
+            id(xvf).set_ns_enable(false);
+            return;
+          }
+          id(xvf).set_ns_enable(true);
+          uint8_t level = 1;
+          if (x == "Light") level = 0;
+          else if (x == "Moderate (recommended)") level = 1;
+          else if (x == "Aggressive") level = 2;
+          else if (x == "Maximum") level = 3;
+          id(xvf).set_ns_level(level);
+
+number:
+  # Fixed-beam aiming angle. Only acted on when Beam Mode is "Fixed". 0° is
+  # straight out from the front of the HAT; positive clockwise.
+  - platform: template
+    id: xvf_beam_angle
+    name: "Beam Angle"
+    icon: "mdi:compass-rose"
+    entity_category: config
+    unit_of_measurement: "°"
+    min_value: -180
+    max_value: 180
+    step: 5
+    mode: slider
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    on_value:
+      - lambda: |-
+          if (!id(xvf).is_servicer_present()) return;
+          id(xvf).set_beam_angle_deg((int16_t) x);
+
+  - platform: template
+    id: xvf_aec_ref_gain_db
+    name: "AEC Reference Gain"
+    icon: "mdi:speaker"
+    entity_category: config
+    unit_of_measurement: "dB"
+    min_value: -24
+    max_value: 12
+    step: 1
+    mode: slider
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    on_value:
+      - lambda: |-
+          if (!id(xvf).is_servicer_present()) return;
+          id(xvf).set_aec_ref_gain_db((int8_t) x);
+
+  - platform: template
+    id: xvf_agc_target_dbfs
+    name: "AGC Target"
+    icon: "mdi:trending-up"
+    entity_category: config
+    unit_of_measurement: "dBFS"
+    min_value: -60
+    max_value: 0
+    step: 1
+    mode: slider
+    optimistic: true
+    restore_value: true
+    initial_value: -23
+    on_value:
+      - lambda: |-
+          if (!id(xvf).is_servicer_present()) return;
+          id(xvf).set_agc_target_dbfs((int8_t) x);
+
+  - platform: template
+    id: xvf_mic_gain_l
+    name: "Mic Gain Left"
+    icon: "mdi:microphone-plus"
+    entity_category: config
+    unit_of_measurement: "dB"
+    min_value: -12
+    max_value: 24
+    step: 1
+    mode: slider
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    on_value:
+      - lambda: |-
+          if (!id(xvf).is_servicer_present()) return;
+          id(xvf).set_mic_gain_l_db((int8_t) x);
+
+  - platform: template
+    id: xvf_mic_gain_r
+    name: "Mic Gain Right"
+    icon: "mdi:microphone-plus"
+    entity_category: config
+    unit_of_measurement: "dB"
+    min_value: -12
+    max_value: 24
+    step: 1
+    mode: slider
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    on_value:
+      - lambda: |-
+          if (!id(xvf).is_servicer_present()) return;
+          id(xvf).set_mic_gain_r_db((int8_t) x);
+
+switch:
+  - platform: template
+    id: xvf_agc_enable
+    name: "AGC Enabled"
+    icon: "mdi:auto-fix"
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - lambda: 'if (id(xvf).is_servicer_present()) id(xvf).set_agc_enable(true);'
+    on_turn_off:
+      - lambda: 'if (id(xvf).is_servicer_present()) id(xvf).set_agc_enable(false);'
+
+sensor:
+  - platform: template
+    id: xvf_doa_angle
+    name: "DOA Angle"
+    icon: "mdi:compass-outline"
+    entity_category: diagnostic
+    unit_of_measurement: "°"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      if (!id(xvf).is_servicer_present()) return NAN;
+      if (!id(xvf).has_capability(esphome::satellite1::audio_capability::DOA_REPORTING)) return NAN;
+      return (float) id(xvf).get_doa_angle_deg();
+
+  - platform: template
+    id: xvf_doa_confidence
+    name: "DOA Confidence"
+    icon: "mdi:gauge"
+    entity_category: diagnostic
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      if (!id(xvf).is_servicer_present()) return NAN;
+      if (!id(xvf).has_capability(esphome::satellite1::audio_capability::DOA_REPORTING)) return NAN;
+      return (float) id(xvf).get_doa_confidence() * 100.0f / 255.0f;
+
+  - platform: template
+    id: xvf_dsp_load
+    name: "XVF DSP Load"
+    icon: "mdi:speedometer"
+    entity_category: diagnostic
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    update_interval: 5s
+    lambda: |-
+      if (!id(xvf).is_servicer_present()) return NAN;
+      if (!id(xvf).has_capability(esphome::satellite1::audio_capability::PIPELINE_STATS_AVAILABLE)) return NAN;
+      // q8.8 fixed point, e.g. 0x1880 = 24.5%.
+      return (float) id(xvf).get_dsp_load_q8_8() / 256.0f;
+
+  - platform: template
+    id: xvf_mic_l_clips
+    name: "Mic L Clip Count"
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: |-
+      if (!id(xvf).is_servicer_present()) return NAN;
+      if (!id(xvf).has_capability(esphome::satellite1::audio_capability::PIPELINE_STATS_AVAILABLE)) return NAN;
+      return (float) id(xvf).get_mic_l_clip_count();
+
+  - platform: template
+    id: xvf_mic_r_clips
+    name: "Mic R Clip Count"
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: |-
+      if (!id(xvf).is_servicer_present()) return NAN;
+      if (!id(xvf).has_capability(esphome::satellite1::audio_capability::PIPELINE_STATS_AVAILABLE)) return NAN;
+      return (float) id(xvf).get_mic_r_clip_count();

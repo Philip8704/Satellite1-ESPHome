@@ -14,6 +14,14 @@ substitutions:
 
   esp32_fw_version: dev
   xmos_fw_version: "v1.0.3"
+  # URL the .factory.bin and .md5 for the XMOS firmware are embedded from at
+  # ESPHome compile time. Default points at the FPH-hosted stock builds. To
+  # ship a Phase 3 custom XMOS firmware (audio servicer + beamforming),
+  # override these in your flash YAML to point at your own hosted bin (HA
+  # /local/, GitHub raw, S3, your LAN HTTP server). The MD5 is verified at
+  # compile time, so a wrong upload fails the build before it ever flashes.
+  xmos_fw_image_url: "https://raw.githubusercontent.com/FutureProofHomes/Documentation/refs/heads/main/assets/firmware/xmos/${xmos_fw_version}/satellite1_firmware_fixed_delay.factory.bin"
+  xmos_fw_md5_url: "https://raw.githubusercontent.com/FutureProofHomes/Documentation/refs/heads/main/assets/firmware/xmos/${xmos_fw_version}/satellite1_firmware_fixed_delay.factory.md5"
 
   # ----------------------------------------------------------------------------
   # External media speaker framework
@@ -55,6 +63,27 @@ substitutions:
   mww_capture_endpoint: ""
   # Probability cutoff (0.0-1.0) above which a near-miss is forwarded.
   mww_capture_lower_cutoff: "0.7"
+
+  # ----------------------------------------------------------------------------
+  # Wakeword / STT tuning (Phase 1 — works with stock FPH XMOS firmware)
+  # ----------------------------------------------------------------------------
+  # Digital gain applied to the satellite mic stream *before* MWW sees it.
+  # Higher = better recall on quiet voices but more risk of clipping on
+  # loud rooms / TV. Range 1..12 in practice; default 6 matches FPH stock.
+  mic_gain_factor: "6"
+  # Speex software noise suppression applied *on top of* XMOS hardware NS.
+  # 0 = disabled (default — XMOS already does NS). 1-4 progressively more
+  # aggressive; usually 2 is the sweet spot when STT is missing words in
+  # noisy rooms. Higher values can muffle quiet speech.
+  va_noise_suppression_level: "0"
+  # ESPHome software AGC target in dBFS. "0 dbfs" = disabled (default —
+  # XMOS does AGC). Try "31 dbfs" if quiet speakers / distant users
+  # don't trigger reliably.
+  va_auto_gain: "0 dbfs"
+  # Linear multiplier applied to the mic stream after AGC. 1.0 = unity.
+  # Raise to 1.5-2.0 in quiet rooms for better STT on whispers; lower
+  # below 1.0 to avoid clipping in loud rooms.
+  va_volume_multiplier: "1.0"
 
 globals:
   # Global initialisation variable. Initialized to true and set to false once everything is connected. Only used to have a smooth "plugging" experience
@@ -203,8 +232,11 @@ memory_flasher:
     id: xflash
     embed_flash_image:
       image_version: ${xmos_fw_version}
-      image_file: https://raw.githubusercontent.com/FutureProofHomes/Documentation/refs/heads/main/assets/firmware/xmos/${xmos_fw_version}/satellite1_firmware_fixed_delay.factory.bin
-      md5_file: https://raw.githubusercontent.com/FutureProofHomes/Documentation/refs/heads/main/assets/firmware/xmos/${xmos_fw_version}/satellite1_firmware_fixed_delay.factory.md5
+      # URLs are substitution-driven so a flash YAML can point at a custom
+      # Phase 3 XMOS build without forking this file. See xmos_fw_image_url
+      # / xmos_fw_md5_url in the substitutions block above.
+      image_file: ${xmos_fw_image_url}
+      md5_file: ${xmos_fw_md5_url}
 
     on_flashing_start:
       then:

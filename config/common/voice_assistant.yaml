@@ -47,7 +47,9 @@ micro_wake_word:
   microphone:
     microphone: sat1_mics
     channels: 1
-    gain_factor: 6
+    # gain_factor substitution lets the flash YAML tune wakeword recall
+    # without forking this file. Default 6 matches the FPH stock build.
+    gain_factor: ${mic_gain_factor}
   stop_after_detection: false
   on_wake_word_detected:
     # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
@@ -114,9 +116,13 @@ voice_assistant:
   media_player: external_media_player
   micro_wake_word: mww
   use_wake_word: false
-  noise_suppression_level: 0
-  auto_gain: 0 dbfs
-  volume_multiplier: 1
+  # Substitution-driven so a flash YAML can override without forking. XMOS
+  # already does NS / AGC in hardware so all three default to "off" — the
+  # software-side stack is layered for rooms where the hardware tuning
+  # isn't enough. See satellite1.base.yaml's `Wakeword / STT tuning` block.
+  noise_suppression_level: ${va_noise_suppression_level}
+  auto_gain: ${va_auto_gain}
+  volume_multiplier: ${va_volume_multiplier}
   on_client_connected:
     - lambda: id(init_in_progress) = false;
     - micro_wake_word.start:
@@ -299,10 +305,18 @@ script:
   - id: activate_stop_word_once
     then:
       - delay: 1s
-      # Enable stop wake word
+      # Enable stop wake word — but ONLY if external speaker routing is
+      # off. With routing on, the XMOS AEC reference is the local muted
+      # stream, NOT what the external MA player actually emits, so the
+      # satellite mic hears its own TTS uncancelled and the "stop" model
+      # false-triggers on the satellite's own response (cancels TTS
+      # mid-sentence). Skip until Phase 3 XMOS firmware can route AEC
+      # reference from the actual playback source.
       - if:
           condition:
-            switch.is_off: timer_ringing
+            and:
+              - switch.is_off: timer_ringing
+              - lambda: 'return !id(external_speaker_routing_on);'
           then:
             - micro_wake_word.enable_model: stop
             - wait_until:

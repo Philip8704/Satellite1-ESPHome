@@ -28,6 +28,7 @@ external_components:
       - satellite1_radar
       - speaker_source
       - tas2780
+      - xvf_control
 
   - source:
       # https://github.com/esphome/esphome/pull/12429

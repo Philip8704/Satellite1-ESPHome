@@ -18,6 +18,48 @@ static const uint8_t GPIO_SERVICER_RESID_PORT_IN_A = 211;
 static const uint8_t GPIO_SERVICER_RESID_PORT_IN_B = 212;
 static const uint8_t GPIO_SERVICER_RESID_PORT_OUT_A = 221;
 
+// Audio DSP control servicer. Implemented Phase 3 in
+// Satellite1-XMOS (a new src/audio/audio_servicer.c registered at RESID
+// 0xE0). Stock fixed_delay v1.0.3 firmware does NOT implement this — the
+// xvf_control ESPHome component probes CAPABILITY_FLAGS at boot and hides
+// every entity when the read returns BAD_RESOURCE.
+//
+// Canonical protocol spec: docs/xmos_dsp_control_protocol.md
+static const uint8_t AUDIO_SERVICER_RESID = 0xE0;
+
+namespace audio_cmd {
+constexpr uint8_t CAPABILITY_FLAGS = 110;
+constexpr uint8_t FW_FEATURE_VERSION = 111;
+constexpr uint8_t BEAM_MODE = 112;
+constexpr uint8_t BEAM_ANGLE = 113;
+constexpr uint8_t DOA_ANGLE = 114;
+constexpr uint8_t DOA_CONFIDENCE = 115;
+constexpr uint8_t AEC_MODE = 116;
+constexpr uint8_t AEC_REF_GAIN_DB = 117;
+constexpr uint8_t AGC_ENABLE = 118;
+constexpr uint8_t AGC_TARGET_DBFS = 119;
+constexpr uint8_t NS_ENABLE = 120;
+constexpr uint8_t NS_LEVEL = 121;
+constexpr uint8_t MIC_GAIN_L = 122;
+constexpr uint8_t MIC_GAIN_R = 123;
+constexpr uint8_t PIPELINE_STATS = 124;
+}  // namespace audio_cmd
+
+namespace audio_capability {
+constexpr uint32_t BEAM_FIXED = 1u << 0;
+constexpr uint32_t BEAM_ADAPTIVE = 1u << 1;
+constexpr uint32_t BEAM_TRACKING = 1u << 2;
+constexpr uint32_t DOA_REPORTING = 1u << 3;
+constexpr uint32_t AEC_TUNING = 1u << 4;
+constexpr uint32_t AGC_TUNING = 1u << 5;
+constexpr uint32_t NS_TUNING = 1u << 6;
+constexpr uint32_t MIC_GAIN_RUNTIME = 1u << 7;
+constexpr uint32_t PIPELINE_STATS_AVAILABLE = 1u << 8;
+}  // namespace audio_capability
+
+enum class BeamMode : uint8_t { FIXED = 0, ADAPTIVE = 1, TRACKING = 2 };
+enum class AecMode : uint8_t { BYPASS = 0, LINEAR = 1, LINEAR_PLUS_RESIDUAL = 2 };
+
 static const uint8_t DFU_CONTROLLER_SERVICER_RESID = 240;
 
 static const uint8_t MAX_CONNECTION_ATTEMPTS = 3;
