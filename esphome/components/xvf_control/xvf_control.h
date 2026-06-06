@@ -63,6 +63,7 @@ class XvfControl : public Component, public satellite1::Satellite1SPIService {
   uint16_t get_dsp_load_q8_8() const { return this->cached_dsp_load_q8_8_; }
   uint16_t get_mic_l_clip_count() const { return this->cached_mic_l_clip_count_; }
   uint16_t get_mic_r_clip_count() const { return this->cached_mic_r_clip_count_; }
+  uint8_t get_mic_count() const { return this->cached_mic_count_; }
 
  protected:
   // Low-level SPI helpers. `transfer_command_` is the single chokepoint
@@ -91,6 +92,7 @@ class XvfControl : public Component, public satellite1::Satellite1SPIService {
   uint16_t cached_dsp_load_q8_8_{0};
   uint16_t cached_mic_l_clip_count_{0};
   uint16_t cached_mic_r_clip_count_{0};
+  uint8_t cached_mic_count_{0};
 
   Trigger<uint32_t> *capability_probed_trigger_{nullptr};
 };

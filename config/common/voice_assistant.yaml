@@ -52,6 +52,10 @@ micro_wake_word:
     gain_factor: ${mic_gain_factor}
   stop_after_detection: false
   on_wake_word_detected:
+    # *** Strictly first action on activation ***: capture the external
+    # player's volume before the wake sound mirror or any TTS reaches MA.
+    # Single-shot per cycle — guarded by external_player_volume_captured_this_cycle.
+    - script.execute: capture_volume_for_cycle
     # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
     - if:
         condition:
@@ -132,14 +136,14 @@ voice_assistant:
     - voice_assistant.stop:
     - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
     - script.execute: control_leds
-    # Defensive cleanup: if HA disconnects while we had the external player
-    # ducked for listening, vad_end will never fire on the satellite side
-    # and the player would stay at 5% until the HA-side watchdog runs.
-    # Restore on disconnect so the music recovers immediately whenever
-    # the API link comes back. The restore script is itself a no-op if
-    # routing is off, so this is safe to call unconditionally.
+    # Defensive cleanup. restore_external_after_listening is now strictly
+    # idempotent — it only issues a volume_set if external_player_currently_ducked
+    # is true. So calling it here is safe even when no duck was outstanding;
+    # it won't clobber MA's current music volume with any fallback value.
     - script.execute: restore_external_after_listening
-    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
+    - lambda: |-
+        id(external_tts_mirrored_this_cycle) = false;
+        id(external_player_volume_captured_this_cycle) = false;
   on_error:
     - if:
         condition:
@@ -154,13 +158,23 @@ voice_assistant:
         id: media_mixing_input
         decibel_reduction: 0   # 0 dB means no reduction
         duration: 1.0s
-    # If we ducked the external player for listening and then errored before
-    # vad_end fired, restore so the player isn't left stuck at 5%.
+    # Defensive restore — self-gates on currently_ducked, so doesn't clobber
+    # MA's current volume when no duck is outstanding.
     - script.execute: restore_external_after_listening
-    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
+    - lambda: |-
+        id(external_tts_mirrored_this_cycle) = false;
+        id(external_player_volume_captured_this_cycle) = false;
 
-  # When the voice assistant starts: Play a wake up sound, duck audio.
+  # When the voice assistant starts: capture the external player's
+  # current volume FIRST (before TTS plays / before MA bumps it for
+  # an announce), then duck local audio, then clear cycle flags.
   on_start:
+    # *** Strictly the first action on activation ***: capture the
+    # external player's volume before anything else can perturb it.
+    # capture_volume_for_cycle is single-shot per cycle (guarded by
+    # external_player_volume_captured_this_cycle) so subsequent capture
+    # calls from on_wake_word_detected / on_tts_start are no-ops.
+    - script.execute: capture_volume_for_cycle
     - mixer_speaker.apply_ducking:
         id: media_mixing_input
         decibel_reduction: 20   # Number of dB quieter; higher implies more quiet, 0 implies full volume
@@ -172,9 +186,11 @@ voice_assistant:
   on_listening:
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
     - script.execute: control_leds
-    # External routing: duck the MA player to 5% so TTS tails / music can't
-    # bleed into the satellite mic during STT. Restored at on_stt_vad_end /
-    # on_end / on_error. No-op when routing is off or entity is unset.
+    # External routing: duck the MA player to 5% for the listening window.
+    # The pre-duck volume was captured at on_start; this script just sets
+    # the player to 5% and starts the watchdog. Restore happens at
+    # on_stt_vad_end (strictly when listening ends — not during processing
+    # or replying).
     - script.execute: duck_external_for_listening
   on_stt_vad_start:
     - lambda: id(voice_assistant_phase) = ${voice_assist_listening_for_command_phase_id};
@@ -208,6 +224,14 @@ voice_assistant:
               url: !lambda 'return x;'
           - lambda: 'id(external_tts_mirrored_this_cycle) = true;'
   on_tts_start:
+    # Belt-and-suspenders capture for the assist_satellite.announce /
+    # start_conversation flow, which does NOT fire on_start (no RUN_START
+    # event) — on_tts_start with the spoken text is the earliest trigger
+    # in that path. capture_volume_for_cycle is single-shot per cycle so
+    # this is a no-op when a previous on_start already captured. Critical
+    # that this runs BEFORE the on_intent_progress / on_tts_end mirror
+    # pushes the URL to MA (which would bump the player's volume).
+    - script.execute: capture_volume_for_cycle
     - if:
         condition:
           # The intent_progress trigger didn't start the TTS Reponse
@@ -268,17 +292,20 @@ voice_assistant:
     # Reset the voice assistant phase id and reset the LED animations.
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
-    # Defensive restore: on_stt_vad_end usually un-ducks the external player,
-    # but if the VA was cancelled mid-listening (action button, stop word,
-    # client disconnect) vad_end never fired and the player would stay
-    # stuck at 5%. The restore script is idempotent so calling it again
-    # after a normal cycle is harmless.
+    # Defensive restore — strictly idempotent: restore_external_after_listening
+    # self-gates on external_player_currently_ducked, so calling it here
+    # after on_stt_vad_end already restored is a no-op (no second
+    # volume_set issued, no clobbering MA's current volume with a
+    # substitution default). Only actually restores when a duck was
+    # outstanding (e.g. VA cancelled mid-listening before vad_end fired).
     - script.execute: restore_external_after_listening
-    # Reset the TTS-mirrored guard for the next cycle. Critical for the
+    # Reset the per-cycle guards for the next cycle. Critical for the
     # assist_satellite.announce / start_conversation path because that
-    # path doesn't fire on_start (no RUN_START event), so on_end is the
-    # only reliable reset point for those cycles.
-    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
+    # path doesn't fire on_start, so on_end is the only reliable reset
+    # point for those cycles.
+    - lambda: |-
+        id(external_tts_mirrored_this_cycle) = false;
+        id(external_player_volume_captured_this_cycle) = false;
 
   on_timer_finished:
     - switch.turn_on: timer_ringing

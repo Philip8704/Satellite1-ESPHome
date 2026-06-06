@@ -322,3 +322,20 @@ sensor:
       if (!id(xvf).is_servicer_present()) return NAN;
       if (!id(xvf).has_capability(esphome::satellite1::audio_capability::PIPELINE_STATS_AVAILABLE)) return NAN;
       return (float) id(xvf).get_mic_r_clip_count();
+
+  # Mic count reported by the running XMOS firmware. The 2-mic build of
+  # the Satellite1 firmware exposes 2; the SATELLITE1-4MIC build exposes
+  # 4. Stays at 0 when the audio servicer isn't present (stock pre-v2
+  # firmware), in which case the HA UI hides it.
+  - platform: template
+    id: xvf_mic_count
+    name: "Active Mic Count"
+    icon: "mdi:microphone-settings"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: |-
+      if (!id(xvf).is_servicer_present()) return NAN;
+      uint8_t mc = id(xvf).get_mic_count();
+      if (mc == 0) return NAN;
+      return (float) mc;

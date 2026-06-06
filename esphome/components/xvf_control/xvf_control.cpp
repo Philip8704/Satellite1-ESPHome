@@ -128,6 +128,20 @@ void XvfControl::probe_capabilities_() {
       (fw_version[0] | fw_version[1] | fw_version[2] | fw_version[3]) != 0;
   this->servicer_present_ = any_version || this->capability_flags_ != 0;
 
+  // One-shot mic_count probe. Cached for the lifetime of the boot —
+  // it's a compile-time property of the running XMOS firmware.
+  if (this->servicer_present_) {
+    uint8_t mc = 0;
+    if (this->read_cmd_(satellite1::audio_cmd::MIC_COUNT, &mc, 1) &&
+        mc >= 2 && mc <= 8) {
+      this->cached_mic_count_ = mc;
+    } else {
+      // Servicer present but mic_count cmd not implemented — assume 2
+      // (matches the pre-v2 firmware behavior).
+      this->cached_mic_count_ = 2;
+    }
+  }
+
   if (this->servicer_present_) {
     ESP_LOGI(TAG, "XVF audio servicer present: caps=0x%08X fw=v%u.%u.%u",
              (unsigned) this->capability_flags_, fw_version[0], fw_version[1], fw_version[2]);

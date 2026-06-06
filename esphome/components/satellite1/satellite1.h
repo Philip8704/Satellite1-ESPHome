@@ -43,6 +43,7 @@ constexpr uint8_t NS_LEVEL = 121;
 constexpr uint8_t MIC_GAIN_L = 122;
 constexpr uint8_t MIC_GAIN_R = 123;
 constexpr uint8_t PIPELINE_STATS = 124;
+constexpr uint8_t MIC_COUNT = 125;
 }  // namespace audio_cmd
 
 namespace audio_capability {
@@ -55,6 +56,7 @@ constexpr uint32_t AGC_TUNING = 1u << 5;
 constexpr uint32_t NS_TUNING = 1u << 6;
 constexpr uint32_t MIC_GAIN_RUNTIME = 1u << 7;
 constexpr uint32_t PIPELINE_STATS_AVAILABLE = 1u << 8;
+constexpr uint32_t FOUR_MIC_BEAMFORMER = 1u << 9;
 }  // namespace audio_capability
 
 enum class BeamMode : uint8_t { FIXED = 0, ADAPTIVE = 1, TRACKING = 2 };
