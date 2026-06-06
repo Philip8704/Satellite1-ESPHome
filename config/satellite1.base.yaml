@@ -175,7 +175,14 @@ packages:
   mmwave: !include common/mmwave.yaml
   sendspin: !include common/sendspin.yaml
   ext_spk: !include common/external_speaker.yaml
-  mww_cap: !include common/mww_capture.yaml
+  # mww_capture is **opt-in** — it's intentionally not included here. The
+  # mww_training_capture component subscribes to MWW's audio callback and
+  # spawns a second MicrophoneSource on sat1_mics, both of which have
+  # been observed to interfere with wake-word detection on stock FPH XMOS
+  # firmware. Users who want near-miss capture must add
+  #   - config/common/mww_capture.yaml
+  # to their flash YAML's packages.<pkg>.files list AND set the
+  # mww_capture_endpoint substitution.
 
   ## OPTIONAL COMPONENTS
   # debug: !include common/debug.yaml
