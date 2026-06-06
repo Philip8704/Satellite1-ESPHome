@@ -126,6 +126,14 @@ voice_assistant:
     - voice_assistant.stop:
     - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
     - script.execute: control_leds
+    # Defensive cleanup: if HA disconnects while we had the external player
+    # ducked for listening, vad_end will never fire on the satellite side
+    # and the player would stay at 5% until the HA-side watchdog runs.
+    # Restore on disconnect so the music recovers immediately whenever
+    # the API link comes back. The restore script is itself a no-op if
+    # routing is off, so this is safe to call unconditionally.
+    - script.execute: restore_external_after_listening
+    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
   on_error:
     - if:
         condition:

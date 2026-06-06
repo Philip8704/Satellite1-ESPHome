@@ -98,13 +98,22 @@ external_components:
       type: local
       path: ../esphome/components
     components:
+      # Vendored on disk — kept in the local list (rather than falling back
+      # to upstream ESPHome) because each has develop-belo-specific changes.
+      # sendspin is intentionally absent here; it's pulled from kahrendt's
+      # ESPHome PR via the external_components block in common/sendspin.yaml.
+      - api
+      - const
       - fusb302b
       - i2s_audio
+      - media_source
       - memory_flasher
+      - micro_wake_word
       - mww_training_capture
       - pcm5122
       - satellite1
       - satellite1_radar
+      - speaker_source
       - tas2780
 
   - source:

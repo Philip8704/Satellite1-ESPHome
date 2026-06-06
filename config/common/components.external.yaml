@@ -1,6 +1,10 @@
 substitutions:
-  ext_comp_repo_url: https://github.com/FutureProofHomes/Satellite1-ESPHome
-  ext_comp_repo_ref: staging
+  # Default to the develop-belo fork so dashboard imports that don't override
+  # these via packages: vars: still resolve to the same git source the rest
+  # of develop-belo expects (the in-tree components were built/tested
+  # against this branch). Flash YAMLs typically override both via vars:.
+  ext_comp_repo_url: https://github.com/Philip8704/Satellite1-ESPHome
+  ext_comp_repo_ref: develop-belo
 
 external_components:
   - source:
@@ -9,13 +13,20 @@ external_components:
       ref: ${ext_comp_repo_ref}
     refresh: 1s
     components:
+      # Mirror the local list in satellite1.yaml. sendspin is intentionally
+      # absent — provided by kahrendt's ESPHome PR via common/sendspin.yaml.
+      - api
+      - const
       - fusb302b
       - i2s_audio
+      - media_source
       - memory_flasher
+      - micro_wake_word
       - mww_training_capture
       - pcm5122
       - satellite1
       - satellite1_radar
+      - speaker_source
       - tas2780
 
   - source:

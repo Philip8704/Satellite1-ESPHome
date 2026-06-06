@@ -13,8 +13,11 @@ esphome:
 
 packages:
   FutureProofHomes.Satellite1:
-    url: &repo_url "https://github.com/futureproofhomes/satellite1-esphome"
-    ref: &repo_ref "staging"
+    # This is the develop-belo fork's dashboard import; the YAML anchors
+    # cascade the same URL/ref into components.external.yaml's vars so the
+    # custom components match the package YAML they were tested with.
+    url: &repo_url "https://github.com/Philip8704/Satellite1-ESPHome"
+    ref: &repo_ref "develop-belo"
     refresh: 1s
     files:
       # Main config files, don't remove

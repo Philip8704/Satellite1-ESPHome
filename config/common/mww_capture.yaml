@@ -51,8 +51,21 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_OFF
     on_turn_on:
-      - mww_training_capture.enable: mww_capture
-      - logger.log: "MWW training capture enabled"
+      # Refuse to enable if the endpoint substitution wasn't overridden.
+      # Without a real URL the component would still post WAVs and the
+      # HTTP client would log a steady stream of errors; better to bounce
+      # the switch back off and log loudly once than to fail silently.
+      - if:
+          condition:
+            lambda: 'return std::string("${mww_capture_endpoint}") == std::string("");'
+          then:
+            - logger.log:
+                level: ERROR
+                format: "MWW training capture cannot be enabled: mww_capture_endpoint substitution is empty. Set it in your flash YAML."
+            - switch.turn_off: mww_capture_enabled
+          else:
+            - mww_training_capture.enable: mww_capture
+            - logger.log: "MWW training capture enabled"
     on_turn_off:
       - mww_training_capture.disable: mww_capture
       - logger.log: "MWW training capture disabled"

@@ -35,6 +35,12 @@ substitutions:
   # level without snapshot/scene tricks that would restart the track.
   external_speaker_restore_volume: "0.5"
   external_speaker_wake_sound_delay: "1500ms"
+  # Safety net: if vad_end / on_end / on_error all somehow fail to fire
+  # (HA crash during STT, lost API connection mid-listen, runaway pipeline),
+  # the duck watchdog auto-restores the external player after this long so
+  # the user isn't left with a 5% music player. 60s is comfortably above
+  # any reasonable STT window.
+  external_speaker_duck_watchdog_timeout: "60s"
 
 globals:
   # Fast lambda-readable mirror of the switch state. Updated by the switch's
@@ -75,6 +81,14 @@ globals:
     type: float
     restore_value: no
     initial_value: '-1.0f'
+  # Counts HA action call failures (entity unreachable, MA not running, etc.)
+  # so a user dashboard can show "your external speaker isn't responding"
+  # without scraping logs. Surfaced as the external_player_action_errors
+  # sensor below.
+  - id: external_player_action_error_count
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
 
 switch:
   # User-facing toggle. Persisted so the device comes back in whichever mode
@@ -137,6 +151,34 @@ sensor:
             id(external_player_volume_observed) = x;
           }
 
+  # Surfaces the HA-action error counter so a user dashboard / alert can spot
+  # an external player that has stopped responding (MA crashed, network blip,
+  # entity renamed). Increments come from on_error handlers on every
+  # media_player.play_media / media_player.volume_set call this framework
+  # issues.
+  - platform: template
+    id: external_player_action_errors
+    name: "External Player Action Errors"
+    icon: "mdi:alert-network-outline"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: 'return (float) id(external_player_action_error_count);'
+
+button:
+  # Manual recovery for the rare case the player ended up ducked and the
+  # framework lost the restore trigger (e.g. ESP-side restart mid-listen,
+  # API disconnect that never reconnected before vad_end). Press this in HA
+  # to immediately set the player back to ${external_speaker_restore_volume}.
+  - platform: template
+    id: reset_external_player_volume
+    name: "Reset External Player Volume"
+    icon: "mdi:volume-source"
+    entity_category: diagnostic
+    on_press:
+      - logger.log: "Manual reset of external player volume"
+      - script.execute: restore_external_after_listening
+
 script:
   # Applies the current switch state to the internal speaker stack. Called
   # whenever the switch is toggled and whenever the DAC selection changes
@@ -187,6 +229,12 @@ script:
                   media_content_id: "{{ url_var }}"
                 variables:
                   url_var: !lambda 'return url;'
+                on_error:
+                  - lambda: 'id(external_player_action_error_count)++;'
+                  - logger.log:
+                      level: WARN
+                      format: "media_player.play_media to %s failed: %s"
+                      args: ['"${external_assist_primary_media_player}"', 'error.c_str()']
 
   # Duck the external media_player to 5% volume. Called on_listening so that
   # any TTS tail (from a satellite assist_satellite.start_conversation /
@@ -222,6 +270,17 @@ script:
                 data:
                   entity_id: "${external_assist_primary_media_player}"
                   volume_level: "0.05"
+                on_error:
+                  - lambda: 'id(external_player_action_error_count)++;'
+                  - logger.log:
+                      level: WARN
+                      format: "duck volume_set failed: %s"
+                      args: ['error.c_str()']
+            # Start the watchdog last so the timeout window starts from
+            # the duck call, not from script-entry. mode: restart on the
+            # watchdog means a re-trigger (next listening cycle) cancels
+            # the prior pending auto-restore.
+            - script.execute: external_duck_watchdog
 
   # Restore the external media_player's volume after listening completes.
   # Uses the pre-duck snapshot captured above. Falls back to the
@@ -231,6 +290,9 @@ script:
   - id: restore_external_after_listening
     mode: queued
     then:
+      # Cancel the watchdog whether or not we end up actually issuing the
+      # action — if the restore path runs at all the timeout is irrelevant.
+      - script.stop: external_duck_watchdog
       - if:
           condition:
             and:
@@ -252,9 +314,30 @@ script:
                     char buf[16];
                     snprintf(buf, sizeof(buf), "%.3f", v);
                     return std::string(buf);
+                on_error:
+                  - lambda: 'id(external_player_action_error_count)++;'
+                  - logger.log:
+                      level: WARN
+                      format: "restore volume_set failed: %s"
+                      args: ['error.c_str()']
             # Reset the snapshot so the next listening cycle re-samples
             # the (post-restore) volume rather than re-using a stale one.
             - lambda: 'id(external_player_pre_duck_volume) = -1.0f;'
+
+  # Auto-restore watchdog. Started by duck_external_for_listening; stopped
+  # by restore_external_after_listening (and by manual reset). If neither
+  # vad_end, on_end, nor on_error ever fires (HA died mid-STT, API
+  # connection dropped before vad_end, etc.) this restores the external
+  # player after the configured timeout so a hung pipeline can't leave the
+  # user's music stuck at 5% indefinitely.
+  - id: external_duck_watchdog
+    mode: restart
+    then:
+      - delay: ${external_speaker_duck_watchdog_timeout}
+      - logger.log:
+          level: WARN
+          format: "External player duck watchdog fired after ${external_speaker_duck_watchdog_timeout} — forcing restore"
+      - script.execute: restore_external_after_listening
 
   # Convenience wrapper for UI tones. Maps the audio_file ID used by the local
   # play_sound script (e.g. "wake_word_triggered_sound") to a remote filename
