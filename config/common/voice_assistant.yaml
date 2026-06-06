@@ -47,15 +47,9 @@ micro_wake_word:
   microphone:
     microphone: sat1_mics
     channels: 1
-    # gain_factor substitution lets the flash YAML tune wakeword recall
-    # without forking this file. Default 6 matches the FPH stock build.
-    gain_factor: ${mic_gain_factor}
+    gain_factor: 6
   stop_after_detection: false
   on_wake_word_detected:
-    # *** Strictly first action on activation ***: capture the external
-    # player's volume before the wake sound mirror or any TTS reaches MA.
-    # Single-shot per cycle — guarded by external_player_volume_captured_this_cycle.
-    - script.execute: capture_volume_for_cycle
     # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
     - if:
         condition:
@@ -95,19 +89,7 @@ micro_wake_word:
                                       id: play_sound
                                       priority: true
                                       sound_file: "wake_word_triggered_sound"
-                                  # External routing has to wait long enough
-                                  # for the wake chime to actually land on
-                                  # the MA speaker before voice_assistant
-                                  # starts — otherwise the satellite's mic
-                                  # opens while the chime is still playing
-                                  # remotely and STT picks it up.
-                                  - if:
-                                      condition:
-                                        lambda: 'return id(external_speaker_routing_on);'
-                                      then:
-                                        - delay: ${external_speaker_wake_sound_delay}
-                                      else:
-                                        - delay: 300ms
+                                  - delay: 300ms
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
 
@@ -120,13 +102,9 @@ voice_assistant:
   media_player: external_media_player
   micro_wake_word: mww
   use_wake_word: false
-  # Substitution-driven so a flash YAML can override without forking. XMOS
-  # already does NS / AGC in hardware so all three default to "off" — the
-  # software-side stack is layered for rooms where the hardware tuning
-  # isn't enough. See satellite1.base.yaml's `Wakeword / STT tuning` block.
-  noise_suppression_level: ${va_noise_suppression_level}
-  auto_gain: ${va_auto_gain}
-  volume_multiplier: ${va_volume_multiplier}
+  noise_suppression_level: 0
+  auto_gain: 0 dbfs
+  volume_multiplier: 1
   on_client_connected:
     - lambda: id(init_in_progress) = false;
     - micro_wake_word.start:
