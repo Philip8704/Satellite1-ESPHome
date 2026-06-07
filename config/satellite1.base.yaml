@@ -47,10 +47,43 @@ substitutions:
   # fast (snapcast-local) or raise it if you hear listening start before the
   # chime lands on the external speaker.
   external_speaker_wake_sound_delay: "1500ms"
-  # Volume the external media_player is restored to after a listening cycle
-  # (the satellite ducks it to 5% while STT is running so TTS tails / music
-  # don't bleed into the mic, then restores to this level). Range 0.0-1.0.
+  # Fallback target volume used when user_target_volume hasn't yet been
+  # captured (Duck mode falls back to this) or as the historical legacy
+  # restore default. The Duck-mode runtime normally uses the live
+  # user_target_volume captured from MA — see capture_user_target_volume
+  # in external_speaker.yaml. Range 0.0-1.0.
   external_speaker_restore_volume: "0.5"
+  # Listening-window behavior on the external player. Three options:
+  #   "Pause" (default) — media_pause on listening, media_play on vad_end.
+  #     Atomic, idempotent, bulletproof. What mass-market voice
+  #     assistants do.
+  #   "Duck" — volume_set(user_target * duck_factor) on listening,
+  #     volume_set(user_target) on vad_end. Refined UX (music stays
+  #     audible, quietly). Snapshots user_target_volume from explicit
+  #     safe moments only (routing on, manual sync, mode change,
+  #     auto-recapture after each cycle settles) — never inside a
+  #     cycle. Eliminates the volume-drift race seen with naive
+  #     mid-cycle reads of MA's volume_level.
+  #   "Off" — no listening-window action. Use when your XMOS AEC
+  #     can ride over background music or when TTS bleed isn't an issue.
+  # The select is restore_value: true so the user's HA-side choice
+  # survives reboots; this substitution only applies on first boot.
+  external_speaker_default_ducking_mode: "Pause"
+  # Duck-mode multiplier — fraction of user_target_volume applied
+  # during the listening window. 0.15 = 15%. Lower = quieter (more
+  # headroom for STT) but more abrupt; higher = gentler but more
+  # music bleed into the mic.
+  external_speaker_duck_factor: "0.15"
+  # Settle delay between "capture trigger" and "sample volume_level"
+  # in capture_user_target_volume. Lets MA finish any in-flight
+  # announce-volume restore. Raise (1500ms-2000ms) for slow / remote
+  # MA setups.
+  external_speaker_duck_capture_settle_delay: "800ms"
+  # Settle delay between "cycle restore" and "auto-recapture". Lets
+  # MA fully release its announce-volume bump before we re-sample.
+  # Auto-recapture self-gates on VA idle so a fast follow-up wake
+  # word cancels the pending recapture.
+  external_speaker_duck_auto_recapture_delay: "3s"
 
   # ----------------------------------------------------------------------------
   # micro_wake_word training capture (near-miss forwarder)
