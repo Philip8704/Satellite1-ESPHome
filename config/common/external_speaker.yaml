@@ -12,8 +12,8 @@
 #   - UI tones (wake / jack / mute / timer / button / factory-reset) are
 #     mirrored to the same entity by fetching ${external_sound_base}/<file>.
 #
-# Listening-window behavior is selectable via the "External Speaker
-# Ducking Mode" template select with three options:
+# Listening-window behavior is selected at compile time via the
+# ${external_speaker_ducking_mode} substitution. Three options:
 #
 #   "Pause" (default) — media_pause on listening, media_play on vad_end.
 #     Atomic, idempotent, doesn't race with MA's announce volume system.
@@ -32,10 +32,14 @@
 #     you have far-field AEC strong enough to ride over background music
 #     or when you don't care about TTS bleed in transcripts.
 #
-# Mode-change semantics: switching the select clears any outstanding
-# state from the previous mode (calls restore_external_after_listening,
-# which fans out to both restore primitives — only the outstanding one
-# acts). Switching the routing switch off does the same.
+# Switching modes requires re-flashing. The substitution comparison is
+# evaluated as a constant lambda — the C++ optimizer dead-strips the
+# inactive mode's branch, so runtime cost is zero.
+#
+# Routing-switch toggled off mid-cycle clears any outstanding pause or
+# duck by calling restore_external_after_listening, which fans out to
+# both restore primitives (only the active one ever has state set, so
+# the other is a no-op).
 
 substitutions:
   # Placeholder default so the routing scripts no-op at runtime when the
@@ -49,10 +53,10 @@ substitutions:
   # pipeline), this watchdog auto-recovers the external player so the
   # music isn't left paused / ducked indefinitely.
   external_speaker_duck_watchdog_timeout: "60s"
-  # Initial value of the External Speaker Ducking Mode select. The
-  # select is restore_value: true so this only applies on first boot
-  # after a flash. Valid: "Pause" | "Duck" | "Off".
-  external_speaker_default_ducking_mode: "Pause"
+  # Listening-window ducking mode. Compile-time only — re-flash to
+  # change. Valid: "Pause" | "Duck" | "Off". See header comment above
+  # for what each does.
+  external_speaker_ducking_mode: "Pause"
   # Volume multiplier applied to user_target_volume while in Duck mode
   # during the listening window. 0.15 = 15% of user's music volume.
   # Lower = more silence headroom but more abrupt; higher = gentler
@@ -157,40 +161,6 @@ switch:
       # toggle. The dispatcher fans out to both restore primitives;
       # each self-gates, so the outstanding one (if any) acts.
       - script.execute: restore_external_after_listening
-
-select:
-  # The user-facing mode switch. Three options, restore_value: true so
-  # the user's choice survives reboots. on_value clears outstanding
-  # state from the previous mode (so a Pause→Duck mid-cycle doesn't
-  # leave music stuck paused, etc.) and triggers a fresh volume capture
-  # when switching INTO Duck mode.
-  - platform: template
-    id: external_speaker_ducking_mode_select
-    name: "External Speaker Ducking Mode"
-    icon: "mdi:tune-vertical"
-    options:
-      - "Pause"
-      - "Duck"
-      - "Off"
-    initial_option: "${external_speaker_default_ducking_mode}"
-    optimistic: true
-    restore_value: true
-    entity_category: config
-    on_value:
-      - logger.log:
-          format: "External Speaker Ducking Mode changed to: %s"
-          args: ['x.c_str()']
-      # Clear any outstanding pause/duck from the previous mode.
-      - script.execute: restore_external_after_listening
-      # If switching INTO Duck and routing is on, capture user_target_volume
-      # so the next cycle has a fresh baseline.
-      - if:
-          condition:
-            and:
-              - lambda: 'return x == "Duck";'
-              - lambda: 'return id(external_speaker_routing_on);'
-          then:
-            - script.execute: capture_user_target_volume
 
 binary_sensor:
   - platform: template
@@ -417,17 +387,20 @@ script:
     mode: queued
     then:
       - lambda: 'id(duck_cycle_id)++;'
+      # Substitution-driven dispatch. The lambda is a constant
+      # expression at compile time so the optimizer keeps only the
+      # branch matching ${external_speaker_ducking_mode}.
       - if:
           condition:
-            lambda: 'return id(external_speaker_ducking_mode_select).state == "Pause";'
+            lambda: 'return std::string("${external_speaker_ducking_mode}") == std::string("Pause");'
           then:
             - script.execute: _pause_external_player
       - if:
           condition:
-            lambda: 'return id(external_speaker_ducking_mode_select).state == "Duck";'
+            lambda: 'return std::string("${external_speaker_ducking_mode}") == std::string("Duck");'
           then:
             - script.execute: _duck_external_player_volume
-            # "Off" → no branch matches, intentional no-op.
+            # "Off" → neither branch matches, intentional no-op.
 
   # Listening-window restore — fan out to BOTH restore primitives. Each
   # self-gates on its own state, so the outstanding one acts and the
@@ -610,7 +583,7 @@ script:
       - if:
           condition:
             and:
-              - lambda: 'return id(external_speaker_ducking_mode_select).state == "Duck";'
+              - lambda: 'return std::string("${external_speaker_ducking_mode}") == std::string("Duck");'
               - lambda: 'return id(duck_state) == 0;'
               - lambda: 'return !id(external_player_currently_paused);'
               - lambda: 'return id(voice_assistant_phase) == ${voice_assist_idle_phase_id};'

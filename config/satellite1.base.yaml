@@ -66,9 +66,9 @@ substitutions:
   #     mid-cycle reads of MA's volume_level.
   #   "Off" — no listening-window action. Use when your XMOS AEC
   #     can ride over background music or when TTS bleed isn't an issue.
-  # The select is restore_value: true so the user's HA-side choice
-  # survives reboots; this substitution only applies on first boot.
-  external_speaker_default_ducking_mode: "Pause"
+  # Compile-time only — re-flash to change. The chosen branch is
+  # dead-stripped by the C++ optimizer, so unused modes cost nothing.
+  external_speaker_ducking_mode: "Pause"
   # Duck-mode multiplier — fraction of user_target_volume applied
   # during the listening window. 0.15 = 15%. Lower = quieter (more
   # headroom for STT) but more abrupt; higher = gentler but more
