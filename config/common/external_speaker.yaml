@@ -139,6 +139,19 @@ globals:
     type: uint32_t
     restore_value: no
     initial_value: '0'
+  # Snapshot of media_player state taken at the START of a cycle (top
+  # of on_wake_word_detected, top of on_tts_start) — BEFORE the
+  # satellite mirrors the wake chime / TTS URL to MA, which would flip
+  # the live state to 'playing' for the duration of our own
+  # announcement.  _pause_external_player and
+  # _duck_external_player_volume use THIS value, not the live sensor,
+  # so a wake word during idle/paused music doesn't get false-triggered
+  # into "actually we were playing because the chime made us look
+  # playing".  Reset to empty string is safe; the gates fall back to
+  # "not playing" and skip the action.
+  - id: external_player_state_at_cycle_start
+    type: std::string
+    restore_value: no
 
 switch:
   - platform: template
@@ -482,15 +495,19 @@ script:
               - lambda: 'return id(external_speaker_routing_on);'
               - binary_sensor.is_on: external_speaker_configured
               - lambda: 'return !id(external_player_currently_paused);'
-              # State gate: only pause if the player is actually
-              # playing. If it's paused / idle / off, we don't touch
-              # it — otherwise the matching media_play in
-              # _resume_external_player_paused would unwantedly start
-              # music the user had deliberately stopped before saying
-              # the wake word. Since currently_paused only flips to
-              # true when we actually paused, _resume self-no-ops
-              # the corresponding restore.
-              - lambda: 'return id(external_player_state_observer).state == "playing";'
+              # State gate: only pause if the player was actually
+              # playing at the START of this cycle (before our own
+              # wake-chime / TTS announce flipped MA's state to
+              # 'playing' for the duration of the announce). Using
+              # the live sensor here would false-trigger pause on the
+              # chime/TTS-induced state change — which is exactly the
+              # bug we're fixing. Snapshot is taken in
+              # voice_assistant.yaml's on_wake_word_detected and
+              # on_tts_start, BEFORE any of our HA actions perturb MA.
+              # Since currently_paused only flips to true when we
+              # actually paused, _resume self-no-ops the corresponding
+              # restore.
+              - lambda: 'return id(external_player_state_at_cycle_start) == "playing";'
           then:
             - lambda: 'id(external_player_currently_paused) = true;'
             - homeassistant.action:
@@ -506,8 +523,9 @@ script:
             - script.execute: external_duck_watchdog
           else:
             - logger.log:
-                format: "Skipped pausing external player (state=%s, was_paused=%d) — nothing to pause"
+                format: "Skipped pausing external player (snapshot=%s, live=%s, was_paused=%d) — nothing to pause"
                 args:
+                  - 'id(external_player_state_at_cycle_start).c_str()'
                   - 'id(external_player_state_observer).state.c_str()'
                   - 'id(external_player_currently_paused)'
 
@@ -554,14 +572,13 @@ script:
               - binary_sensor.is_on: external_speaker_configured
               - lambda: 'return id(duck_state) == 0;'
               # State gate (symmetric with _pause_external_player):
-              # only duck if music is actually playing. Ducking a
-              # paused/idle player would set its volume_level to the
-              # ducked value silently, which is harmless on its own,
-              # but means a subsequent "play music" command during
-              # STT would briefly start at the ducked level before
-              # restore fires. Skipping the duck keeps the player
-              # entirely untouched when no music is playing.
-              - lambda: 'return id(external_player_state_observer).state == "playing";'
+              # only duck if music was actually playing at the START
+              # of this cycle, before our wake-chime/TTS announce
+              # bumped MA into 'playing' state of its own accord.
+              # Using the live sensor would false-trigger duck on
+              # the announce. Snapshot is taken at on_wake_word_detected
+              # and on_tts_start, before our mirror calls fire.
+              - lambda: 'return id(external_player_state_at_cycle_start) == "playing";'
           then:
             # Last-chance bootstrap: if we still don't have a captured
             # user_target_volume AND the sensor has a value right now,
@@ -623,8 +640,9 @@ script:
             - script.execute: external_duck_watchdog
           else:
             - logger.log:
-                format: "Skipped ducking external player (state=%s, duck_state=%d) — nothing to duck"
+                format: "Skipped ducking external player (snapshot=%s, live=%s, duck_state=%d) — nothing to duck"
                 args:
+                  - 'id(external_player_state_at_cycle_start).c_str()'
                   - 'id(external_player_state_observer).state.c_str()'
                   - 'id(duck_state)'
 
