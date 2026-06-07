@@ -47,6 +47,13 @@ substitutions:
   # fast (snapcast-local) or raise it if you hear listening start before the
   # chime lands on the external speaker.
   external_speaker_wake_sound_delay: "1500ms"
+  # When routing is OFF (stock local speaker), how long to wait after
+  # starting the wake-chime before opening the mic. The local FLAC wake
+  # chime is ~500ms; add a 200ms buffer so listening starts after the
+  # chime audibly ends. Lower for snappier turnaround at the cost of the
+  # chime overlapping STT capture; raise if you swapped the chime for a
+  # longer file.
+  local_wake_sound_to_listen_delay: "700ms"
   # Fallback target volume used when user_target_volume hasn't yet been
   # captured (Duck mode falls back to this) or as the historical legacy
   # restore default. The Duck-mode runtime normally uses the live

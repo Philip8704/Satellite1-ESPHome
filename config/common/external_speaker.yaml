@@ -205,14 +205,44 @@ sensor:
   # Subscribes to the external media_player's volume_level attribute.
   # Only READ from capture_user_target_volume (which has a settle delay
   # and runs only from explicit safe moments). Never read inside a duck
-  # cycle — doing so was the bug that caused volume drift in the
-  # previous volume-based implementation. Stays NaN while the entity
-  # is unreachable / unconfigured; the isnan check in the capture
-  # script handles that case.
+  # cycle (after the first-cycle bootstrap below) — doing so was the
+  # bug that caused volume drift in the previous volume-based
+  # implementation. Stays NaN while the entity is unreachable /
+  # unconfigured.
+  #
+  # on_value bootstrap: HA pushes the initial value when MA finally
+  # publishes a state change (sometimes minutes after boot, sometimes
+  # only after the first user volume change). When that first valid
+  # reading lands we capture it AS LONG AS we're not currently in a
+  # duck/pause cycle (otherwise the value reflects our own
+  # manipulation, not the user's intent). This is what avoids the
+  # "first cycle restores to the substitution default 0.5 instead of
+  # the user's actual music level" bug seen in early-boot logs.
   - platform: homeassistant
     id: external_player_volume_level_observer
     entity_id: "${external_assist_primary_media_player}"
     attribute: volume_level
+    on_value:
+      - if:
+          condition:
+            and:
+              - lambda: 'return !id(user_target_volume_valid);'
+              - lambda: 'return id(external_speaker_routing_on);'
+              - binary_sensor.is_on: external_speaker_configured
+              - lambda: 'return !std::isnan(x);'
+              - lambda: 'return id(duck_state) == 0;'
+              - lambda: 'return !id(external_player_currently_paused);'
+          then:
+            - lambda: |-
+                float v = x;
+                if (v < 0.0f) v = 0.0f;
+                if (v > 1.0f) v = 1.0f;
+                id(user_target_volume) = v;
+                id(user_target_volume_valid) = true;
+                ESP_LOGI("ext_spk", "Bootstrap captured user_target_volume = %.3f (first sensor push)", v);
+            - sensor.template.publish:
+                id: external_player_target_volume
+                state: !lambda 'return id(user_target_volume);'
 
 button:
   # Generic recovery — clears any outstanding pause or duck. Works for
@@ -490,6 +520,31 @@ script:
               - binary_sensor.is_on: external_speaker_configured
               - lambda: 'return id(duck_state) == 0;'
           then:
+            # Last-chance bootstrap: if we still don't have a captured
+            # user_target_volume AND the sensor has a value right now,
+            # grab it before we duck. This catches the edge case where
+            # the on_value bootstrap above hasn't fired yet (HA hadn't
+            # pushed an initial value because MA's volume never
+            # changed since the satellite's API connect). Without this
+            # the first duck cycle restores to the substitution
+            # default (0.5), producing the "music jumps louder after
+            # first wake word" UX bug.
+            - if:
+                condition:
+                  and:
+                    - lambda: 'return !id(user_target_volume_valid);'
+                    - lambda: 'return !std::isnan(id(external_player_volume_level_observer).state);'
+                then:
+                  - lambda: |-
+                      float v = id(external_player_volume_level_observer).state;
+                      if (v < 0.0f) v = 0.0f;
+                      if (v > 1.0f) v = 1.0f;
+                      id(user_target_volume) = v;
+                      id(user_target_volume_valid) = true;
+                      ESP_LOGI("ext_spk", "Pre-duck bootstrap captured user_target_volume = %.3f", v);
+                  - sensor.template.publish:
+                      id: external_player_target_volume
+                      state: !lambda 'return id(user_target_volume);'
             # Flip state BEFORE the async HA action so a concurrent
             # restore call (e.g. fast follow-up wake word) sees the
             # ducked state and issues a proper restore.

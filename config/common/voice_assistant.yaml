@@ -104,7 +104,26 @@ micro_wake_word:
                                       id: play_sound
                                       priority: true
                                       sound_file: "wake_word_triggered_sound"
-                                  - delay: 300ms
+                                  # Wait for the wake chime to actually
+                                  # finish playing before opening the mic.
+                                  # If routing is on, the chime goes through
+                                  # the HA -> MA -> network -> remote
+                                  # speaker pipeline (typically 800-1500ms
+                                  # of latency + chime length). If routing
+                                  # is off, the local FLAC chime is about
+                                  # 500ms long and we add a small buffer.
+                                  # Before this fix the hardcoded 300ms
+                                  # opened the mic before the chime even
+                                  # finished, which made the listening
+                                  # window feel artificially short to
+                                  # anyone relying on the audio cue.
+                                  - if:
+                                      condition:
+                                        lambda: 'return id(external_speaker_routing_on);'
+                                      then:
+                                        - delay: ${external_speaker_wake_sound_delay}
+                                      else:
+                                        - delay: ${local_wake_sound_to_listen_delay}
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
 
