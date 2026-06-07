@@ -244,6 +244,25 @@ sensor:
                 id: external_player_target_volume
                 state: !lambda 'return id(user_target_volume);'
 
+text_sensor:
+  # Subscribes to the external media_player's state (playing / paused /
+  # idle / off / buffering / unknown). Read by _pause_external_player
+  # and _duck_external_player_volume to decide whether to act.
+  #
+  # The rule: we only touch the player if state == "playing" at the
+  # moment of pause/duck. If the user had already stopped music (state
+  # paused/idle/off), we skip the action so we can't accidentally
+  # resume it via media_play after STT ends. The downstream gate is
+  # that currently_paused / duck_state only flip when we actually
+  # act, so the restore primitives naturally no-op when we didn't act.
+  #
+  # Stays empty string while the entity is unreachable; the lambda
+  # comparisons below treat that as "not playing", which is the
+  # conservative behavior (don't touch unknown state).
+  - platform: homeassistant
+    id: external_player_state_observer
+    entity_id: "${external_assist_primary_media_player}"
+
 button:
   # Generic recovery — clears any outstanding pause or duck. Works for
   # both modes. Self-gates so pressing when no state is outstanding is
@@ -463,6 +482,15 @@ script:
               - lambda: 'return id(external_speaker_routing_on);'
               - binary_sensor.is_on: external_speaker_configured
               - lambda: 'return !id(external_player_currently_paused);'
+              # State gate: only pause if the player is actually
+              # playing. If it's paused / idle / off, we don't touch
+              # it — otherwise the matching media_play in
+              # _resume_external_player_paused would unwantedly start
+              # music the user had deliberately stopped before saying
+              # the wake word. Since currently_paused only flips to
+              # true when we actually paused, _resume self-no-ops
+              # the corresponding restore.
+              - lambda: 'return id(external_player_state_observer).state == "playing";'
           then:
             - lambda: 'id(external_player_currently_paused) = true;'
             - homeassistant.action:
@@ -476,6 +504,12 @@ script:
                       format: "media_pause failed: %s"
                       args: ['error.c_str()']
             - script.execute: external_duck_watchdog
+          else:
+            - logger.log:
+                format: "Skipped pausing external player (state=%s, was_paused=%d) — nothing to pause"
+                args:
+                  - 'id(external_player_state_observer).state.c_str()'
+                  - 'id(external_player_currently_paused)'
 
   - id: _resume_external_player_paused
     mode: queued
@@ -519,6 +553,15 @@ script:
               - lambda: 'return id(external_speaker_routing_on);'
               - binary_sensor.is_on: external_speaker_configured
               - lambda: 'return id(duck_state) == 0;'
+              # State gate (symmetric with _pause_external_player):
+              # only duck if music is actually playing. Ducking a
+              # paused/idle player would set its volume_level to the
+              # ducked value silently, which is harmless on its own,
+              # but means a subsequent "play music" command during
+              # STT would briefly start at the ducked level before
+              # restore fires. Skipping the duck keeps the player
+              # entirely untouched when no music is playing.
+              - lambda: 'return id(external_player_state_observer).state == "playing";'
           then:
             # Last-chance bootstrap: if we still don't have a captured
             # user_target_volume AND the sensor has a value right now,
@@ -578,6 +621,12 @@ script:
                   - '"${external_speaker_duck_factor}"'
                   - 'id(duck_cycle_id)'
             - script.execute: external_duck_watchdog
+          else:
+            - logger.log:
+                format: "Skipped ducking external player (state=%s, duck_state=%d) — nothing to duck"
+                args:
+                  - 'id(external_player_state_observer).state.c_str()'
+                  - 'id(duck_state)'
 
   - id: _restore_external_player_volume
     mode: queued
