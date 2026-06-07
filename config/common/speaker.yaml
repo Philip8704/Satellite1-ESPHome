@@ -102,6 +102,10 @@ script:
             - tas2780.activate:
                 mode: !lambda 'return id(pd_power_contract) >=9 ? 2 : 0;'
             - lambda: id(tas2780_active) = true;
+            # tas2780.activate clears the amp's mute register; if the user
+            # has external routing on we have to re-assert the mute or
+            # audio will briefly leak out the internal speaker.
+            - script.execute: apply_external_speaker_routing
 
   - id: activate_internal_speaker
     mode: single
@@ -109,12 +113,19 @@ script:
       - logger.log: "Activating internal speaker"
       - script.execute: tas2780_ensure_active
       - dac_proxy.activate_speaker:
+      # dac_proxy.activate_speaker switches the active DAC to the TAS2780
+      # whose mute register starts un-muted. Re-assert the routing-mute.
+      - script.execute: apply_external_speaker_routing
 
   - id: activate_line_out
     mode: single
     then:
       - logger.log: "Activating line-out audio"
       - dac_proxy.activate_line_out:
+      # Re-assert the routing-mute on the freshly-active PCM5122 line-out.
+      # With routing on, this silences the analog out on the 3.5mm jack too
+      # so the satellite is fully silent regardless of which DAC is active.
+      - script.execute: apply_external_speaker_routing
 
 api:
   actions:

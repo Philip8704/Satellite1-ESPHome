@@ -136,13 +136,17 @@ esphome:
 
         # Stock FPH DAC fallback: if line_out was used previously but the
         # cable isn't actually plugged in, fall back to internal speaker.
-        # This framework intentionally does NOT modify this behavior when
-        # external_speaker_routing is on — the internal speaker stack runs
-        # exactly as the stock FPH firmware ships it.
+        # DAC *selection* is left to stock FPH logic; the routing-mute
+        # state is then re-asserted below.
         - lambda: |
             if( !id(line_out_sensor).state && id(dac_proxy).active_dac == 1){
               id(dac_proxy).activate_speaker();
             }
+
+        # Re-assert the routing mute on whichever DAC the stock fallback
+        # left active. Safe to call unconditionally — it's a no-op when
+        # external_speaker_routing is off.
+        - script.execute: apply_external_speaker_routing
 
         # If after 10 minutes, the device is still initializing (It did not yet connect to Home Assistant), turn off the init_in_progress variable and run the script to refresh the LED status
         - delay: 10min
@@ -262,6 +266,9 @@ memory_flasher:
             else:
               - tas2780.activate:
                   mode: 0
+        # tas2780.activate clears the amp's mute register; re-assert the
+        # routing mute so internal speaker stays silent post-flash.
+        - script.execute: apply_external_speaker_routing
 
     on_flashing_failed:
       then:

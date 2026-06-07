@@ -122,8 +122,12 @@ switch:
     restore_mode: RESTORE_DEFAULT_OFF
     on_turn_on:
       - lambda: id(external_speaker_routing_on) = true;
+      # Mute the internal DAC so audio only comes out the external player.
+      - script.execute: apply_external_speaker_routing
     on_turn_off:
       - lambda: id(external_speaker_routing_on) = false;
+      # Un-mute the internal DAC so stock FPH speaker behavior resumes.
+      - script.execute: apply_external_speaker_routing
       # Defensive: if a listening cycle was mid-duck when the user toggled
       # routing off, restore the external player so it isn't left at 5%.
       - if:
@@ -204,14 +208,40 @@ button:
             - logger.log: "Manual reset pressed but no duck is outstanding — no-op (refusing to overwrite MA's current volume)"
 
 script:
-  # Vestigial no-op kept under its old name so existing call sites
-  # (speaker.yaml, satellite1.base.yaml) compile without further surgery.
-  # The internal speaker stack is intentionally left to stock FPH behavior;
-  # this script does NOT touch the dac_proxy or any DAC routing.
+  # Apply the current routing-switch state to the internal DAC's mute
+  # register. ON → mute the active DAC (whichever the jack-detect path
+  # has selected — TAS2780 internal speaker or PCM5122 line-out) so
+  # nothing comes out the satellite locally. OFF → un-mute so stock FPH
+  # behavior resumes.
+  #
+  # This **does not** change the DAC selection (active_dac stays where
+  # the stock jack-detect logic put it), it only flips the mute bit on
+  # the active DAC. That matters because:
+  #
+  #   - The XMOS still receives the i2s output stream as its AEC
+  #     reference; muting downstream of the i2s tap means AEC works
+  #     unchanged against whatever the speaker pipeline emits.
+  #   - The local speaker_source media_player still "plays" TTS
+  #     (silently into the muted DAC) so voice_assistant phase timing
+  #     (on_intent_progress / on_tts_end / on_listening) is identical
+  #     to the routing-off case.
+  #   - Jack plug/unplug still drives line_out_sensor and the stock
+  #     activate_internal_speaker / activate_line_out scripts run
+  #     normally; we just re-assert mute after every DAC selection
+  #     change (see the script.execute: apply_external_speaker_routing
+  #     calls in speaker.yaml and satellite1.base.yaml).
   - id: apply_external_speaker_routing
     mode: restart
     then:
-      - lambda: 'return;  // intentional no-op'
+      - if:
+          condition:
+            lambda: 'return id(external_speaker_routing_on);'
+          then:
+            - logger.log: "External speaker routing ON - muting internal DAC"
+            - lambda: 'id(dac_proxy).set_mute_on();'
+          else:
+            - logger.log: "External speaker routing OFF - un-muting internal DAC"
+            - lambda: 'id(dac_proxy).set_mute_off();'
 
   # Plays an arbitrary URL on the configured external media_player as an
   # announcement. Used for both voice-assistant TTS mirroring (URL comes from
