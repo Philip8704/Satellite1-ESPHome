@@ -50,6 +50,21 @@ micro_wake_word:
     gain_factor: 6
   stop_after_detection: false
   on_wake_word_detected:
+    # *** First action on activation — runs BEFORE the wake chime is
+    # mirrored to MA. ***
+    # play_sound (a few lines down) calls play_ui_sound_on_external,
+    # which fires media_player.play_media with announce: true on the
+    # external player. As soon as MA starts handling that announcement
+    # it bumps the player's reported volume_level to its announce_volume,
+    # and any subsequent capture catches the bumped value instead of the
+    # original music volume — producing the runaway loop where each
+    # cycle's "captured" volume drifts away from the real music vol.
+    # Capturing here, before play_sound mirrors anything to MA, locks in
+    # the true music vol while the sensor still reflects it.
+    # capture_volume_for_cycle is mode: single + guarded by
+    # external_player_volume_captured_this_cycle so the redundant
+    # capture calls at on_start / on_tts_start are silent no-ops.
+    - script.execute: capture_volume_for_cycle
     # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
     - if:
         condition:
