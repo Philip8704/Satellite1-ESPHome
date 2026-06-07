@@ -134,9 +134,7 @@ voice_assistant:
     # is true. So calling it here is safe even when no duck was outstanding;
     # it won't clobber MA's current music volume with any fallback value.
     - script.execute: restore_external_after_listening
-    - lambda: |-
-        id(external_tts_mirrored_this_cycle) = false;
-        id(external_player_volume_captured_this_cycle) = false;
+    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
   on_error:
     - if:
         condition:
@@ -151,12 +149,11 @@ voice_assistant:
         id: media_mixing_input
         decibel_reduction: 0   # 0 dB means no reduction
         duration: 1.0s
-    # Defensive restore — self-gates on currently_ducked, so doesn't clobber
-    # MA's current volume when no duck is outstanding.
+    # Defensive resume — self-gates on external_player_currently_paused,
+    # so it's safe to call unconditionally and won't disturb a player
+    # that wasn't paused by us.
     - script.execute: restore_external_after_listening
-    - lambda: |-
-        id(external_tts_mirrored_this_cycle) = false;
-        id(external_player_volume_captured_this_cycle) = false;
+    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
 
   # When the voice assistant starts: capture the external player's
   # current volume FIRST (before TTS plays / before MA bumps it for
@@ -285,20 +282,18 @@ voice_assistant:
     # Reset the voice assistant phase id and reset the LED animations.
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
-    # Defensive restore — strictly idempotent: restore_external_after_listening
-    # self-gates on external_player_currently_ducked, so calling it here
-    # after on_stt_vad_end already restored is a no-op (no second
-    # volume_set issued, no clobbering MA's current volume with a
-    # substitution default). Only actually restores when a duck was
-    # outstanding (e.g. VA cancelled mid-listening before vad_end fired).
+    # Defensive resume — strictly idempotent. resume_external_after_listening
+    # (called via the restore_external_after_listening alias) self-gates
+    # on external_player_currently_paused, so calling it here after
+    # on_stt_vad_end already resumed is a clean no-op. Only actually
+    # resumes when a pause was outstanding (e.g. VA cancelled
+    # mid-listening before vad_end fired).
     - script.execute: restore_external_after_listening
-    # Reset the per-cycle guards for the next cycle. Critical for the
+    # Reset the TTS-mirrored guard for the next cycle. Critical for the
     # assist_satellite.announce / start_conversation path because that
     # path doesn't fire on_start, so on_end is the only reliable reset
     # point for those cycles.
-    - lambda: |-
-        id(external_tts_mirrored_this_cycle) = false;
-        id(external_player_volume_captured_this_cycle) = false;
+    - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
 
   on_timer_finished:
     - switch.turn_on: timer_ringing

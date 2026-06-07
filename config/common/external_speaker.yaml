@@ -1,118 +1,75 @@
 # External speaker routing for Music Assistant / HA media_player targets.
 #
 # When the "External Speaker Routing" switch is ON:
-#   - **The internal speaker stack is NOT touched**. Stock FPH DAC routing
-#     (TAS2780 internal + PCM5122 line-out, jack-detect driven) is left
-#     entirely alone. If you want the internal speaker silent while routing
-#     externally, mute it via the existing HA media_player.volume_set on
-#     the local satellite media_player entity.
-#   - voice assistant TTS URLs are mirrored to ${external_assist_primary_media_player}
-#     as announcements (Music Assistant handles announcement volume natively),
+#   - The internal DAC is muted via dac_proxy.set_mute_on() so the
+#     satellite is fully silent locally. Stock FPH DAC *selection* logic
+#     (jack-detect → TAS2780 vs PCM5122) is untouched; we only flip the
+#     mute bit on whichever DAC is active. See apply_external_speaker_routing.
+#   - TTS URLs are mirrored to ${external_assist_primary_media_player} as
+#     announcements via media_player.play_media with announce: true. MA's
+#     own announcement system handles announce-volume bump/restore — we
+#     do not compete with it.
 #   - UI tones (wake / jack / mute / timer / button / factory-reset) are
-#     also played on the same external entity by fetching
-#     ${external_sound_base}/<file>,
-#   - the external media_player is ducked to 5% volume *during the
-#     listening window only*. The pre-duck volume is captured at
-#     voice_assistant on_start (before any TTS / announce volume bump
-#     from MA) and restored verbatim at on_stt_vad_end. No capture or
-#     restore happens during TTS playback, processing, or while MA's
-#     native announce-volume handling is bumping the player.
-#
-# All substitutions default to empty / safe values in satellite1.base.yaml.
-# With an empty external_assist_primary_media_player the routing scripts
-# silently no-op even if the switch is on.
+#     mirrored to the same entity by fetching ${external_sound_base}/<file>.
+#   - During the STT listening window the external player is **paused**
+#     via media_player.media_pause, and **resumed** via media_player.media_play
+#     when listening ends. Pause/play is atomic, idempotent on most MA
+#     player platforms, and (critically) does not race with MA's announce
+#     volume tracking. There is no per-cycle volume capture, no drifting
+#     restore value, no need to subscribe to volume_level — eliminated
+#     the entire class of "music volume drifts across consecutive wake-word
+#     cycles" bugs.
 
 substitutions:
-  # Placeholder default so the homeassistant.sensor entity_id parses at
-  # compile time even when the user hasn't configured an actual target.
-  # external_speaker_configured (below) treats this value as "not set".
+  # Placeholder default so the routing scripts no-op at runtime when the
+  # user hasn't configured an actual target. The binary_sensor below
+  # treats this magic value as "not set".
   external_assist_primary_media_player: "media_player.satellite1_unconfigured"
   external_sound_base: ""
-  # Fallback used by restore_external_after_listening only when we haven't
-  # observed a volume_level from the external player yet (e.g. very first
-  # listening cycle after boot, before the homeassistant.sensor has had a
-  # chance to push a value). Normal operation captures + restores the
-  # pre-duck volume, so the music keeps playing at exactly its original
-  # level without snapshot/scene tricks that would restart the track.
-  external_speaker_restore_volume: "0.5"
   external_speaker_wake_sound_delay: "1500ms"
   # Safety net: if vad_end / on_end / on_error all somehow fail to fire
-  # (HA crash during STT, lost API connection mid-listen, runaway pipeline),
-  # the duck watchdog auto-restores the external player after this long so
-  # the user isn't left with a 5% music player. 60s is comfortably above
-  # any reasonable STT window.
+  # (HA crash during STT, lost API connection mid-listen, runaway
+  # pipeline), this watchdog auto-resumes the external player so the
+  # music isn't left paused indefinitely.
   external_speaker_duck_watchdog_timeout: "60s"
 
 globals:
-  # Fast lambda-readable mirror of the switch state. Updated by the switch's
-  # on_turn_on / on_turn_off actions and read by routing scripts so we don't
-  # block on switch lookups inside the audio path.
+  # Fast lambda-readable mirror of the switch state. Updated by the switch
+  # on_turn_on / on_turn_off actions; read by routing scripts and by the
+  # voice_assistant action chain.
   - id: external_speaker_routing_on
     type: bool
     restore_value: no
     initial_value: 'false'
-  # Set when we've already mirrored a TTS URL to the external player for the
-  # current voice_assistant cycle. Pipeline-streaming TTS fires the URL via
-  # on_intent_progress *before* on_tts_end, while the
-  # assist_satellite.announce / start_conversation flow only fires on_tts_end
-  # (intent_progress never carries a URL for those). The flag lets on_tts_end
-  # serve as a single canonical fallback without double-mirroring streaming
-  # responses. Reset in on_start (pipeline cycle begins) and on_end / on_error
-  # (defensive, also covers announce cycles which skip on_start).
+  # Dedup guard for the TTS-URL mirror. Pipeline-streaming TTS fires the
+  # URL via on_intent_progress *before* on_tts_end; the announce /
+  # start_conversation flow only fires on_tts_end. The flag lets
+  # on_tts_end serve as a single canonical fallback without
+  # double-mirroring streaming responses. Reset in on_start / on_end /
+  # on_error.
   - id: external_tts_mirrored_this_cycle
     type: bool
     restore_value: no
     initial_value: 'false'
-  # Continuously mirrors the external media_player's reported volume_level
-  # via the homeassistant.sensor below. -1.0 sentinel means "not observed
-  # yet" (HA hasn't pushed a value, or the entity doesn't exist because the
-  # user hasn't overridden the substitution).
-  - id: external_player_volume_observed
-    type: float
-    restore_value: no
-    initial_value: '-1.0f'
-  # Volume of the external player captured at on_start of each VA cycle,
-  # BEFORE Music Assistant's native announce-volume handling can bump it
-  # and BEFORE any TTS / mirror happens. restore_external_after_listening
-  # writes this value back verbatim at on_stt_vad_end. -1.0 sentinel
-  # means "not captured yet this cycle" — the restore path treats that
-  # as "do nothing" rather than falling back to a substitution default
-  # (which was the source of the runaway volume-creep loop).
-  - id: external_player_pre_duck_volume
-    type: float
-    restore_value: no
-    initial_value: '-1.0f'
-  # Set when capture_volume_for_cycle has run AND duck_external_for_listening
-  # has actually issued the volume_set to 0.05. The restore path gates on
-  # this so on_end / on_error / on_client_disconnected / the watchdog only
-  # actually issue a restore if a duck is genuinely outstanding. Without
-  # this, defensive restores would write the substitution fallback over
-  # whatever volume Music Assistant had ended up at, causing each cycle to
-  # ratchet the music volume upward.
-  - id: external_player_currently_ducked
+  # True between media_pause and media_play. on_end / on_error /
+  # on_client_disconnected / the watchdog only actually issue a resume
+  # if a pause is genuinely outstanding — so a normal cycle that
+  # already resumed at on_stt_vad_end doesn't get a redundant
+  # second media_play that could disturb a player that wasn't playing
+  # to begin with.
+  - id: external_player_currently_paused
     type: bool
     restore_value: no
     initial_value: 'false'
-  # Set true at on_start, false at on_end / on_error. Guards
-  # capture_volume_for_cycle so it only runs once per VA cycle (the first
-  # thing on activation, before TTS or duck — exactly when the player is
-  # at its true music volume).
-  - id: external_player_volume_captured_this_cycle
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-  # Counts HA action call failures (entity unreachable, MA not running, etc.)
-  # so a user dashboard can show "your external speaker isn't responding"
-  # without scraping logs. Surfaced as the external_player_action_errors
-  # sensor below.
+  # Counts HA action call failures (entity unreachable, MA not running,
+  # etc.) so a user dashboard can show "your external speaker isn't
+  # responding" without scraping logs.
   - id: external_player_action_error_count
     type: uint32_t
     restore_value: no
     initial_value: '0'
 
 switch:
-  # User-facing toggle. Persisted so the device comes back in whichever mode
-  # the user last selected.
   - platform: template
     id: external_speaker_routing
     name: "External Speaker Routing"
@@ -122,26 +79,19 @@ switch:
     restore_mode: RESTORE_DEFAULT_OFF
     on_turn_on:
       - lambda: id(external_speaker_routing_on) = true;
-      # Mute the internal DAC so audio only comes out the external player.
       - script.execute: apply_external_speaker_routing
     on_turn_off:
       - lambda: id(external_speaker_routing_on) = false;
-      # Un-mute the internal DAC so stock FPH speaker behavior resumes.
       - script.execute: apply_external_speaker_routing
-      # Defensive: if a listening cycle was mid-duck when the user toggled
-      # routing off, restore the external player so it isn't left at 5%.
+      # If a listening cycle was mid-pause when the user toggled routing
+      # off, resume the external player so it isn't left silent forever.
       - if:
           condition:
-            lambda: 'return id(external_player_currently_ducked);'
+            lambda: 'return id(external_player_currently_paused);'
           then:
-            - script.execute: restore_external_after_listening
+            - script.execute: resume_external_after_listening
 
 binary_sensor:
-  # Compile-time gate exposed at runtime. If the YAML flasher didn't override
-  # the external_assist_primary_media_player substitution, it stays at the
-  # placeholder default; the routing scripts skip the homeassistant.action
-  # calls entirely rather than firing media_player.play_media against a
-  # non-existent entity (which would log noisy errors in HA every cycle).
   - platform: template
     id: external_speaker_configured
     name: "External Speaker Configured"
@@ -152,30 +102,10 @@ binary_sensor:
              std::string("media_player.satellite1_unconfigured");
 
 sensor:
-  # Mirrors the external media_player's volume_level attribute so the duck
-  # script can snapshot the pre-duck value and restore_external_after_listening
-  # can write it back verbatim. This is the snapshot-free alternative to
-  # media_player.snapshot / scene.create — it never touches the player's
-  # playback state, so a track that was mid-playback before STT continues
-  # uninterrupted at its original volume after STT ends.
-  - platform: homeassistant
-    id: external_player_volume_state
-    entity_id: ${external_assist_primary_media_player}
-    attribute: volume_level
-    internal: true
-    on_value:
-      # Volume reports in HA range 0.0-1.0; clamp out NaN/0 garbage so the
-      # restore step doesn't write back a silly value.
-      - lambda: |-
-          if (x >= 0.0f && x <= 1.0f) {
-            id(external_player_volume_observed) = x;
-          }
-
-  # Surfaces the HA-action error counter so a user dashboard / alert can spot
-  # an external player that has stopped responding (MA crashed, network blip,
-  # entity renamed). Increments come from on_error handlers on every
-  # media_player.play_media / media_player.volume_set call this framework
-  # issues.
+  # Surfaces the HA-action error counter so a user dashboard / alert can
+  # spot an external player that has stopped responding. Increments come
+  # from on_error handlers on every play_media / media_pause / media_play
+  # call this framework issues.
   - platform: template
     id: external_player_action_errors
     name: "External Player Action Errors"
@@ -186,50 +116,30 @@ sensor:
     lambda: 'return (float) id(external_player_action_error_count);'
 
 button:
-  # Manual recovery if the player ended up genuinely stuck at the duck
-  # volume — only writes when external_player_currently_ducked is true
-  # (the restore script self-gates). Press this from HA when you observe
-  # the music is silent and a VA cycle ended without restoring. If no
-  # duck is outstanding, this is a no-op (won't clobber MA's current
-  # music volume with the substitution default).
+  # Manual recovery for the rare case the player ended up paused and the
+  # framework lost the resume trigger (e.g. ESP-side restart mid-listen).
+  # Self-gates on external_player_currently_paused so pressing it when no
+  # pause is outstanding is a clean no-op.
   - platform: template
     id: reset_external_player_volume
-    name: "Reset External Player Volume"
-    icon: "mdi:volume-source"
+    name: "Resume External Player"
+    icon: "mdi:play-circle"
     entity_category: diagnostic
     on_press:
       - if:
           condition:
-            lambda: 'return id(external_player_currently_ducked);'
+            lambda: 'return id(external_player_currently_paused);'
           then:
-            - logger.log: "Manual reset of external player volume"
-            - script.execute: restore_external_after_listening
+            - logger.log: "Manual resume of external player"
+            - script.execute: resume_external_after_listening
           else:
-            - logger.log: "Manual reset pressed but no duck is outstanding — no-op (refusing to overwrite MA's current volume)"
+            - logger.log: "Manual resume pressed but no pause outstanding — no-op"
 
 script:
-  # Apply the current routing-switch state to the internal DAC's mute
-  # register. ON → mute the active DAC (whichever the jack-detect path
-  # has selected — TAS2780 internal speaker or PCM5122 line-out) so
-  # nothing comes out the satellite locally. OFF → un-mute so stock FPH
-  # behavior resumes.
-  #
-  # This **does not** change the DAC selection (active_dac stays where
-  # the stock jack-detect logic put it), it only flips the mute bit on
-  # the active DAC. That matters because:
-  #
-  #   - The XMOS still receives the i2s output stream as its AEC
-  #     reference; muting downstream of the i2s tap means AEC works
-  #     unchanged against whatever the speaker pipeline emits.
-  #   - The local speaker_source media_player still "plays" TTS
-  #     (silently into the muted DAC) so voice_assistant phase timing
-  #     (on_intent_progress / on_tts_end / on_listening) is identical
-  #     to the routing-off case.
-  #   - Jack plug/unplug still drives line_out_sensor and the stock
-  #     activate_internal_speaker / activate_line_out scripts run
-  #     normally; we just re-assert mute after every DAC selection
-  #     change (see the script.execute: apply_external_speaker_routing
-  #     calls in speaker.yaml and satellite1.base.yaml).
+  # Applies the current routing-switch state to the internal DAC mute bit.
+  # ON → mute the active DAC (TAS2780 or PCM5122) so the satellite is
+  # silent locally. OFF → un-mute so stock FPH speaker behavior resumes.
+  # Does not change DAC *selection* — jack-detect still drives that.
   - id: apply_external_speaker_routing
     mode: restart
     then:
@@ -243,11 +153,11 @@ script:
             - logger.log: "External speaker routing OFF - un-muting internal DAC"
             - lambda: 'id(dac_proxy).set_mute_off();'
 
-  # Plays an arbitrary URL on the configured external media_player as an
-  # announcement. Used for both voice-assistant TTS mirroring (URL comes from
-  # the pipeline) and UI tone playback (URL = ${external_sound_base}/<file>).
-  # No-ops silently if routing is off, the media_player substitution is unset,
-  # or the URL is empty.
+  # Mirrors a URL to the configured external media_player as an
+  # announcement. Used by the TTS URL mirror (voice_assistant.yaml's
+  # on_intent_progress / on_tts_end) and by play_ui_sound_on_external.
+  # MA's own announcement system handles announce-volume bump/restore —
+  # we just hand it the URL.
   - id: play_on_external
     mode: queued
     parameters:
@@ -260,10 +170,6 @@ script:
               - binary_sensor.is_on: external_speaker_configured
               - lambda: 'return !url.empty();'
           then:
-            # data: takes plain strings; the dynamic media URL is plumbed
-            # through variables: + data_template: so it works on every
-            # ESPHome version (rather than relying on `!lambda` under
-            # data: which only became reliable on the newest releases).
             - homeassistant.action:
                 action: media_player.play_media
                 data:
@@ -281,42 +187,11 @@ script:
                       format: "media_player.play_media to %s failed: %s"
                       args: ['"${external_assist_primary_media_player}"', 'error.c_str()']
 
-  # First step on each VA cycle: capture the external player's current
-  # volume into external_player_pre_duck_volume so the restore path has
-  # something authoritative to write back. Called from voice_assistant's
-  # on_start (and on_wake_word_detected as belt-and-suspenders) — both
-  # fire BEFORE any TTS plays and BEFORE the announce-volume bump from
-  # Music Assistant can pollute the reading. mode: single + the
-  # volume_captured_this_cycle guard means the capture happens EXACTLY
-  # once per cycle, never re-captures mid-flow.
-  - id: capture_volume_for_cycle
-    mode: single
-    then:
-      - if:
-          condition:
-            and:
-              - lambda: 'return id(external_speaker_routing_on);'
-              - binary_sensor.is_on: external_speaker_configured
-              - lambda: 'return !id(external_player_volume_captured_this_cycle);'
-          then:
-            - lambda: |-
-                float observed = id(external_player_volume_observed);
-                if (observed >= 0.0f && observed <= 1.0f) {
-                  id(external_player_pre_duck_volume) = observed;
-                  id(external_player_volume_captured_this_cycle) = true;
-                  ESP_LOGI("ext_spk", "Captured pre-duck volume = %.3f for this VA cycle", observed);
-                } else {
-                  ESP_LOGW("ext_spk", "Volume sensor has no observation yet; "
-                                       "skipping capture (restore will be a no-op this cycle)");
-                }
-
-  # Duck the external media_player to 5% volume. Called on_listening so
-  # any TTS tail / background music can't echo into the satellite mic
-  # during STT. **No capture happens here** — the pre-duck volume must
-  # have been captured at on_start by capture_volume_for_cycle so we
-  # don't read it during MA's announce-volume window. If no capture
-  # happened (very first cycle after boot, sensor still empty), the
-  # restore path will leave the player alone rather than guess.
+  # Pause the external player for the STT listening window. Atomic, no
+  # per-cycle state needed beyond the currently_paused flag. MA handles
+  # the music's track position so resume() picks up where it left off.
+  # If the player wasn't playing (idle / paused already), media_pause is
+  # a clean no-op on every modern HA media_player platform.
   - id: duck_external_for_listening
     mode: queued
     then:
@@ -325,30 +200,35 @@ script:
             and:
               - lambda: 'return id(external_speaker_routing_on);'
               - binary_sensor.is_on: external_speaker_configured
-              - lambda: 'return id(external_player_volume_captured_this_cycle);'
+              - lambda: 'return !id(external_player_currently_paused);'
           then:
             - homeassistant.action:
-                action: media_player.volume_set
+                action: media_player.media_pause
                 data:
                   entity_id: "${external_assist_primary_media_player}"
-                  volume_level: "0.05"
                 on_error:
                   - lambda: 'id(external_player_action_error_count)++;'
                   - logger.log:
                       level: WARN
-                      format: "duck volume_set failed: %s"
+                      format: "media_pause failed: %s"
                       args: ['error.c_str()']
-            - lambda: 'id(external_player_currently_ducked) = true;'
+            - lambda: 'id(external_player_currently_paused) = true;'
             - script.execute: external_duck_watchdog
 
-  # Restore the external media_player's volume after listening completes.
-  # **Strictly idempotent and side-effect-free unless we actually ducked
-  # this cycle.** Gates on external_player_currently_ducked so on_end /
-  # on_error / on_client_disconnected / watchdog calls don't write any
-  # volume_set unless there's a genuine outstanding duck — that's what
-  # used to cause the runaway upward creep when the substitution-default
-  # fallback was clobbering MA's natural music volume.
+  # Resume the external player after listening completes. Gated on
+  # currently_paused so on_end / on_error / on_client_disconnected /
+  # watchdog calls are safe to make unconditionally — they only actually
+  # issue media_play when a pause we initiated is genuinely outstanding.
   - id: restore_external_after_listening
+    mode: queued
+    then:
+      - script.execute: resume_external_after_listening
+
+  # Internal alias kept so resume call sites read naturally; the
+  # restore_external_after_listening name is preserved above so the
+  # voice_assistant.yaml triggers (which call that name from many
+  # places) don't need to change.
+  - id: resume_external_after_listening
     mode: queued
     then:
       - script.stop: external_duck_watchdog
@@ -357,54 +237,38 @@ script:
             and:
               - lambda: 'return id(external_speaker_routing_on);'
               - binary_sensor.is_on: external_speaker_configured
-              - lambda: 'return id(external_player_currently_ducked);'
-              - lambda: |-
-                  float v = id(external_player_pre_duck_volume);
-                  return v >= 0.0f && v <= 1.0f;
+              - lambda: 'return id(external_player_currently_paused);'
           then:
             - homeassistant.action:
-                action: media_player.volume_set
+                action: media_player.media_play
                 data:
                   entity_id: "${external_assist_primary_media_player}"
-                data_template:
-                  volume_level: "{{ vol }}"
-                variables:
-                  vol: !lambda |-
-                    float v = id(external_player_pre_duck_volume);
-                    char buf[16];
-                    snprintf(buf, sizeof(buf), "%.3f", v);
-                    return std::string(buf);
                 on_error:
                   - lambda: 'id(external_player_action_error_count)++;'
                   - logger.log:
                       level: WARN
-                      format: "restore volume_set failed: %s"
+                      format: "media_play failed: %s"
                       args: ['error.c_str()']
-            - lambda: 'id(external_player_currently_ducked) = false;'
+            - lambda: 'id(external_player_currently_paused) = false;'
 
-  # Auto-restore watchdog. Started by duck_external_for_listening; stopped
-  # by restore_external_after_listening. The restore_external_after_listening
-  # script already gates on external_player_currently_ducked so calling it
-  # from the watchdog is safe — if the duck got cleared by some other path
-  # already, the watchdog fire is a no-op.
+  # Watchdog: if vad_end / on_end / on_error never fires (HA crashed
+  # mid-STT, lost API link), auto-resume after the configured timeout
+  # so the user's music doesn't stay paused indefinitely.
   - id: external_duck_watchdog
     mode: restart
     then:
       - delay: ${external_speaker_duck_watchdog_timeout}
       - if:
           condition:
-            lambda: 'return id(external_player_currently_ducked);'
+            lambda: 'return id(external_player_currently_paused);'
           then:
             - logger.log:
                 level: WARN
-                format: "External player duck watchdog fired after ${external_speaker_duck_watchdog_timeout} — forcing restore"
-            - script.execute: restore_external_after_listening
+                format: "External player pause watchdog fired after ${external_speaker_duck_watchdog_timeout} — forcing resume"
+            - script.execute: resume_external_after_listening
 
-  # Convenience wrapper for UI tones. Maps the audio_file ID used by the local
-  # play_sound script (e.g. "wake_word_triggered_sound") to a remote filename
-  # under ${external_sound_base}/. Filenames mirror the upstream
-  # fph-firmware-assets layout — drop the same set of files under the path the
-  # external_sound_base substitution points at to support routed UI tones.
+  # Convenience wrapper for UI tones. Maps the audio_file ID used by the
+  # local play_sound script to a remote filename under ${external_sound_base}/.
   - id: play_ui_sound_on_external
     mode: queued
     parameters:
@@ -420,8 +284,6 @@ script:
             - script.execute:
                 id: play_on_external
                 url: !lambda |-
-                  // Map audio_file IDs declared in common/media_player.yaml to
-                  // the on-disk filenames the upstream sounds bucket uses.
                   std::string base = "${external_sound_base}";
                   if (sound_file == "wake_word_triggered_sound")     return base + "/wake_word_triggered.flac";
                   if (sound_file == "jack_connected_sound")          return base + "/jack_connected.flac";
@@ -437,3 +299,12 @@ script:
                   if (sound_file == "factory_reset_cancelled_sound") return base + "/factory_reset_cancelled.mp3";
                   if (sound_file == "factory_reset_confirmed_sound") return base + "/factory_reset_confirmed.mp3";
                   return std::string("");
+
+  # capture_volume_for_cycle was the per-cycle volume snapshot used by
+  # the old volume-based ducking. The pause/resume model has no need for
+  # it — kept as a no-op so voice_assistant.yaml's on_start / on_tts_start
+  # / on_wake_word_detected callers still compile without rewiring.
+  - id: capture_volume_for_cycle
+    mode: single
+    then:
+      - lambda: 'return;  // pause/resume model — no per-cycle capture needed'
