@@ -474,16 +474,27 @@ script:
             - script.execute: _duck_external_player_volume
             # "Off" → neither branch matches, intentional no-op.
 
-  # Listening-window restore — fan out to BOTH restore primitives. Each
-  # self-gates on its own state, so the outstanding one acts and the
-  # other is a no-op. This handles mode-mid-cycle gracefully: if the
-  # user flipped the select from Pause to Duck while we were paused,
+  # Listening-window restore — fan out to BOTH mode-specific restore
+  # primitives, plus a defensive "ensure music actually resumed" check.
+  # Each self-gates on its own state, so the outstanding one acts and
+  # the others are no-ops. This handles mode-mid-cycle gracefully: if
+  # the user flipped the select from Pause to Duck while we were paused,
   # the resume primitive still fires here and we end up clean.
   - id: restore_external_after_listening
     mode: queued
     then:
       - script.execute: _resume_external_player_paused
       - script.execute: _restore_external_player_volume
+      # Defensive resume — MA's media_player.play_media with
+      # announce: true pauses underlying music for its announce
+      # window and on some MA configurations leaves the player in
+      # 'idle' state afterwards without auto-resuming. If our
+      # pre-cycle snapshot says music WAS playing but the live
+      # state is no longer playing, issue media_play to get the
+      # user's music back. Self-gates so it's a no-op when music
+      # wasn't playing originally (we don't start music the user
+      # didn't have running).
+      - script.execute: _ensure_player_resumed_if_was_playing
 
   # Backward-compat alias. Existing voice_assistant.yaml callers /
   # buttons / switch handlers use this name.
@@ -723,6 +734,41 @@ script:
             # gates on idle so a rapid follow-up wake word cancels it.
             - script.execute: _auto_recapture_user_target_volume
 
+  # Defensive resume — handles MA's announce-handling stopping
+  # underlying music for the chime/TTS and not auto-resuming
+  # afterwards. Compares the pre-cycle snapshot (what MA was doing
+  # BEFORE our cycle perturbed anything) against the live state
+  # right now. If the snapshot said "playing" but the live state is
+  # not "playing", music got stopped — by MA, not us — so we
+  # explicitly start it again. Conservative: if the snapshot wasn't
+  # "playing" or the live state IS already "playing", do nothing.
+  # We never start music the user didn't already have running.
+  - id: _ensure_player_resumed_if_was_playing
+    mode: queued
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(external_speaker_routing_on);'
+              - binary_sensor.is_on: external_speaker_configured
+              - lambda: 'return id(external_player_state_at_cycle_start) == std::string("playing");'
+              - lambda: 'return id(external_player_state_observer).state != std::string("playing");'
+          then:
+            - homeassistant.action:
+                action: media_player.media_play
+                data:
+                  entity_id: "${external_assist_primary_media_player}"
+                on_error:
+                  - lambda: 'id(external_player_action_error_count)++;'
+                  - logger.log:
+                      level: WARN
+                      format: "media_play (defensive resume) failed: %s"
+                      args: ['error.c_str()']
+            - logger.log:
+                format: "Defensive resume of external player (snapshot=playing, live=%s)"
+                args:
+                  - 'id(external_player_state_observer).state.c_str()'
+
   # Auto-recapture user_target_volume after a duck cycle has finished
   # and the VA is fully idle. Mode: restart — a new cycle starting
   # within the delay window cancels the pending recapture cleanly.
@@ -769,6 +815,17 @@ script:
 
   # Convenience wrapper for UI tones. Maps the audio_file ID used by the
   # local play_sound script to a remote filename under ${external_sound_base}/.
+  #
+  # Special case: the wake chime is suppressed in Duck mode IF music
+  # was playing at cycle start. Reason: MA's media_player.play_media
+  # with announce: true pauses the underlying music for the duration
+  # of the announcement, and may not auto-resume after — which
+  # directly defeats Duck mode's whole purpose (music continuity).
+  # The LED ring already gives the user a clear "I heard you"
+  # indication, so dropping the audio chime in this specific case is
+  # the right trade-off. When music isn't playing, or in Pause/Off
+  # modes, the chime mirror runs normally. The TTS response mirror
+  # is always unconditional — you need to hear the response.
   - id: play_ui_sound_on_external
     mode: queued
     parameters:
@@ -780,6 +837,16 @@ script:
               - lambda: 'return id(external_speaker_routing_on);'
               - binary_sensor.is_on: external_speaker_configured
               - lambda: 'return std::string("${external_sound_base}") != std::string("");'
+              - lambda: |-
+                  // Skip wake chime when (Duck mode) AND (music was playing).
+                  // All other sound files (jack, timer, button, factory_reset,
+                  // mute) keep their mirror behavior unchanged — they don't
+                  // fire during music sessions in normal use, and the
+                  // momentary MA disruption is acceptable for those one-offs.
+                  bool is_wake_chime = (sound_file == std::string("wake_word_triggered_sound"));
+                  bool is_duck_mode = (std::string("${external_speaker_ducking_mode}") == std::string("Duck"));
+                  bool music_playing = (id(external_player_state_at_cycle_start) == std::string("playing"));
+                  return !(is_wake_chime && is_duck_mode && music_playing);
           then:
             - script.execute:
                 id: play_on_external
