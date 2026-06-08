@@ -93,6 +93,16 @@ substitutions:
   # LED goes idle while external speaker still talks AND volume
   # restore lands while MA is still managing the announce.
   external_speaker_post_response_unduck_delay: "1500ms"
+  # Additional delay AFTER the primary restore before re-firing a
+  # second volume_set. MA's announce subsystem sometimes does a
+  # delayed announce-restore (1-2 seconds after the announce
+  # apparently finished) that overwrites our restore — MA "remembers"
+  # the volume from announce-start time (which was OUR ducked value
+  # because the duck was already in effect when the announce
+  # arrived), and "restores" to that wrong value. The second
+  # volume_set overrides MA's late change. Set to "0ms" to disable
+  # the second restore if your MA setup doesn't show this behavior.
+  external_speaker_post_response_late_restore_delay: "2000ms"
 
 globals:
   # Fast lambda-readable mirror of the switch state. Updated by the switch
@@ -598,6 +608,53 @@ script:
           then:
             - lambda: 'id(voice_assistant_phase) = ${voice_assist_idle_phase_id};'
             - script.execute: control_leds
+      # Defensive second volume_set. MA's announce subsystem
+      # sometimes does a delayed announce-restore 1-2 seconds after
+      # the apparent "done" state — overwriting our just-restored
+      # volume with the value MA captured at announce-start (which
+      # was our ducked value, because we ducked BEFORE the announce
+      # arrived). The first restore above wins the immediate race;
+      # this second volume_set after another configurable delay
+      # wins the SECOND race against MA's late restore.
+      #
+      # Idempotent: if MA didn't override, this re-sets the volume
+      # to the same value (no audible change). Gated on routing-on
+      # and user_target_volume_valid so it's a no-op when there's
+      # nothing to restore. Direct volume_set (not via the dispatcher)
+      # because the dispatcher's primitives self-gate on
+      # duck_state==1 / currently_paused, which were both cleared
+      # by the first restore — going through the dispatcher again
+      # would be a no-op when we explicitly DO want to fire.
+      - delay: ${external_speaker_post_response_late_restore_delay}
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(external_speaker_routing_on);'
+              - binary_sensor.is_on: external_speaker_configured
+              - lambda: 'return id(user_target_volume_valid);'
+          then:
+            - homeassistant.action:
+                action: media_player.volume_set
+                data:
+                  entity_id: "${external_assist_primary_media_player}"
+                data_template:
+                  volume_level: "{{ target }}"
+                variables:
+                  target: !lambda |-
+                    float v = id(user_target_volume);
+                    if (v < 0.0f) v = 0.0f;
+                    if (v > 1.0f) v = 1.0f;
+                    return v;
+                on_error:
+                  - lambda: 'id(external_player_action_error_count)++;'
+                  - logger.log:
+                      level: WARN
+                      format: "volume_set (late restore) failed: %s"
+                      args: ['error.c_str()']
+            - logger.log:
+                format: "Late restore: re-set external player volume to %.3f (override MA late announce-restore)"
+                args:
+                  - 'id(user_target_volume)'
 
   # ---------------------------------------------------------------------
   # Pause-mode primitives
