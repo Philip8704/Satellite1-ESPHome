@@ -85,8 +85,16 @@ void DACProxy::activate_line_out() {
   if (this->tas2780_) {
     this->tas2780_->set_mute_on();
   }
-  if (!this->restore_state_.line_out_is_muted) {
+  // Skip the un-mute side of the activation when the routing
+  // lockdown is in effect — external routing wants both DACs
+  // hard-muted regardless of which one is "active".
+  if (!this->restore_state_.line_out_is_muted && !this->routing_locked_) {
     this->pcm5122_->set_mute_off();
+  } else if (this->routing_locked_) {
+    // Defensively force-mute the newly-active DAC. tas2780.activate
+    // and similar hardware-init paths can clear the mute register
+    // on the DAC itself, so we re-assert here for safety.
+    this->pcm5122_->set_mute_on();
   }
   this->send_selected_dac_();
   this->defer([this]() { this->state_callback_.call(); });
@@ -103,8 +111,13 @@ void DACProxy::activate_speaker() {
   if (this->pcm5122_) {
     this->pcm5122_->set_mute_on();
   }
-  if (!this->restore_state_.speaker_is_muted) {
+  // Same routing-lockdown discipline as activate_line_out(): when
+  // locked, the active DAC is hard-muted regardless of the
+  // persisted restore_state, and any prior unmute is reverted.
+  if (!this->restore_state_.speaker_is_muted && !this->routing_locked_) {
     this->tas2780_->set_mute_off();
+  } else if (this->routing_locked_) {
+    this->tas2780_->set_mute_on();
   }
   this->defer([this]() { this->state_callback_.call(); });
   this->save_volume_restore_state_();
@@ -115,15 +128,19 @@ void DACProxy::activate() {
     if (this->pcm5122_) {
       this->pcm5122_->set_mute_on();
     }
-    if (!this->restore_state_.speaker_is_muted) {
+    if (!this->restore_state_.speaker_is_muted && !this->routing_locked_) {
       this->tas2780_->set_mute_off();
+    } else if (this->routing_locked_) {
+      this->tas2780_->set_mute_on();
     }
   } else if (this->pcm5122_) {
     if (this->tas2780_) {
       this->tas2780_->set_mute_on();
     }
-    if (!this->restore_state_.line_out_is_muted) {
+    if (!this->restore_state_.line_out_is_muted && !this->routing_locked_) {
       this->pcm5122_->set_mute_off();
+    } else if (this->routing_locked_) {
+      this->pcm5122_->set_mute_on();
     }
   }
 }
@@ -131,6 +148,19 @@ void DACProxy::activate() {
 bool DACProxy::set_mute_off() {
   if (this->setup_was_called_ == false) {
     ESP_LOGD(TAG, "DACProxy::set_mute_off() called before setup()");
+    return false;
+  }
+  // Hard lockdown: when external speaker routing is active, refuse
+  // every set_mute_off, no matter who calls it. This is the
+  // single chokepoint through which i2s_audio_speaker's deferred
+  // unmute (i2s_audio_speaker.cpp:101) AND
+  // media_player.volume_mute(false) reach the physical DAC. By
+  // returning false here without touching the underlying driver,
+  // we guarantee the internal speaker stays silent regardless of
+  // upstream actions — volume changes, speaker-source mute
+  // toggles, USB-PD renegotiation, DAC selection switches, etc.
+  if (this->routing_locked_) {
+    ESP_LOGW(TAG, "set_mute_off ignored — external speaker routing lockdown is active");
     return false;
   }
   bool has_changed = false;

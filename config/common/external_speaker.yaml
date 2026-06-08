@@ -333,10 +333,17 @@ button:
             - logger.log: "Sync pressed but routing/configuration off — no-op"
 
 script:
-  # Applies the current routing-switch state to the internal DAC mute bit.
-  # ON → mute the active DAC (TAS2780 or PCM5122) so the satellite is
-  # silent locally. OFF → un-mute so stock FPH speaker behavior resumes.
-  # Does not change DAC *selection* — jack-detect still drives that.
+  # Applies the current routing-switch state to the internal DAC.
+  # ON  → lock the DAC into mute mode (set_routing_locked(true) +
+  #       set_mute_on()). The lockdown flag makes ALL subsequent
+  #       set_mute_off() calls a no-op until routing turns off, so
+  #       upstream code (i2s_audio_speaker's deferred mute toggle,
+  #       media_player.volume_mute, DAC re-selection on jack/PD
+  #       events) cannot transiently unmute the internal speaker.
+  # OFF → clear the lockdown and call set_mute_off() so the stock
+  #       FPH speaker behavior resumes.
+  # DAC *selection* is not changed here — jack-detect still drives
+  # which DAC is active.
   - id: apply_external_speaker_routing
     mode: restart
     then:
@@ -344,11 +351,22 @@ script:
           condition:
             lambda: 'return id(external_speaker_routing_on);'
           then:
-            - logger.log: "External speaker routing ON - muting internal DAC"
-            - lambda: 'id(dac_proxy).set_mute_on();'
+            - logger.log: "External speaker routing ON — locking internal DAC mute"
+            - lambda: |-
+                // Order matters: set the lock FIRST, then issue
+                // set_mute_on. If we did it the other way around,
+                // a concurrent unmute could race between the mute
+                // and the lock-set.
+                id(dac_proxy).set_routing_locked(true);
+                id(dac_proxy).set_mute_on();
           else:
-            - logger.log: "External speaker routing OFF - un-muting internal DAC"
-            - lambda: 'id(dac_proxy).set_mute_off();'
+            - logger.log: "External speaker routing OFF — releasing DAC mute lock"
+            - lambda: |-
+                // Clear the lock BEFORE set_mute_off, otherwise
+                // the lockdown gate inside set_mute_off would
+                // reject our own un-mute call.
+                id(dac_proxy).set_routing_locked(false);
+                id(dac_proxy).set_mute_off();
 
   # Mirrors a URL to the configured external media_player as an
   # announcement. Used by the TTS URL mirror (voice_assistant.yaml's

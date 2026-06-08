@@ -46,10 +46,23 @@ class DACProxy : public audio_dac::AudioDac, public Component, public Satellite1
   void activate_line_out();
   void activate_speaker();
 
+  // Hard mute lockdown — when set, set_mute_off() is a no-op and
+  // activate_speaker()/activate_line_out() skip their internal
+  // unmute calls. Used by the external speaker routing framework
+  // to ensure the internal speaker NEVER plays audio while audio
+  // is routed to a Music Assistant / HA media_player, regardless
+  // of volume changes, mute toggles, DAC switches, or USB-PD
+  // renegotiation events that would otherwise transiently unmute
+  // a DAC. Called from the routing switch's on_turn_on / on_turn_off
+  // and on_boot in YAML.
+  void set_routing_locked(bool locked) { this->routing_locked_ = locked; }
+  bool is_routing_locked() const { return this->routing_locked_; }
+
   DacOutput active_dac{SPEAKER};
 
  protected:
   bool setup_was_called_{false};
+  bool routing_locked_{false};
   ESPPreferenceObject pref_;
   DACProxyRestoreState restore_state_;
   void save_volume_restore_state_();
