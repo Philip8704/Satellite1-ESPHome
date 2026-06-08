@@ -93,16 +93,23 @@ substitutions:
   # LED goes idle while external speaker still talks AND volume
   # restore lands while MA is still managing the announce.
   external_speaker_post_response_unduck_delay: "1500ms"
-  # Additional delay AFTER the primary restore before re-firing a
-  # second volume_set. MA's announce subsystem sometimes does a
-  # delayed announce-restore (1-2 seconds after the announce
-  # apparently finished) that overwrites our restore — MA "remembers"
-  # the volume from announce-start time (which was OUR ducked value
-  # because the duck was already in effect when the announce
-  # arrived), and "restores" to that wrong value. The second
-  # volume_set overrides MA's late change. Set to "0ms" to disable
-  # the second restore if your MA setup doesn't show this behavior.
-  external_speaker_post_response_late_restore_delay: "2000ms"
+  # Multi-shot defensive volume corrector. After the primary restore
+  # fires, the wrapper re-issues volume_set every
+  # external_speaker_late_restore_interval for
+  # external_speaker_late_restore_shots iterations. This overrides
+  # MA's delayed announce-restore behavior — especially across
+  # start_conversation / multi-turn flows where MA queues multiple
+  # late restores (one per turn) that fire at staggered intervals
+  # AFTER the apparent "done" state. A single defensive shot misses
+  # MA's later overrides; the multi-shot guard window covers them.
+  #
+  # Total guard window = shots * interval ms past the primary restore.
+  # Defaults: 6 shots * 500ms = 3000ms of corrections, which covered
+  # observed MA late-restore cascades in the user's logs. Idempotent —
+  # if MA isn't overriding the volume, the redundant volume_sets land
+  # on the already-correct value (no audible change).
+  external_speaker_late_restore_shots: "6"
+  external_speaker_late_restore_interval: "500ms"
 
 globals:
   # Fast lambda-readable mirror of the switch state. Updated by the switch
@@ -608,53 +615,54 @@ script:
           then:
             - lambda: 'id(voice_assistant_phase) = ${voice_assist_idle_phase_id};'
             - script.execute: control_leds
-      # Defensive second volume_set. MA's announce subsystem
-      # sometimes does a delayed announce-restore 1-2 seconds after
-      # the apparent "done" state — overwriting our just-restored
-      # volume with the value MA captured at announce-start (which
-      # was our ducked value, because we ducked BEFORE the announce
-      # arrived). The first restore above wins the immediate race;
-      # this second volume_set after another configurable delay
-      # wins the SECOND race against MA's late restore.
+      # Multi-shot defensive volume corrector. After the primary
+      # restore above, fire volume_set at regular intervals to override
+      # MA's delayed announce-restore cascade — particularly bad in
+      # start_conversation / multi-turn flows where MA queues multiple
+      # late restores (one per turn) that fire at staggered intervals
+      # AFTER the apparent "done" state. A single defensive shot
+      # would miss MA's later overrides; the multi-shot guard window
+      # catches them all.
       #
-      # Idempotent: if MA didn't override, this re-sets the volume
-      # to the same value (no audible change). Gated on routing-on
-      # and user_target_volume_valid so it's a no-op when there's
-      # nothing to restore. Direct volume_set (not via the dispatcher)
-      # because the dispatcher's primitives self-gate on
-      # duck_state==1 / currently_paused, which were both cleared
-      # by the first restore — going through the dispatcher again
-      # would be a no-op when we explicitly DO want to fire.
-      - delay: ${external_speaker_post_response_late_restore_delay}
-      - if:
-          condition:
-            and:
-              - lambda: 'return id(external_speaker_routing_on);'
-              - binary_sensor.is_on: external_speaker_configured
-              - lambda: 'return id(user_target_volume_valid);'
+      # Each shot:
+      #   * Direct homeassistant.action: media_player.volume_set
+      #     (not through the dispatcher — dispatcher's primitives
+      #     self-gate on duck_state==1 which was cleared by the
+      #     primary restore).
+      #   * Idempotent — if MA isn't overriding, no audible change.
+      #   * Gated on routing-on / configured / target_valid so
+      #     it's a clean no-op for unconfigured / off setups.
+      #
+      # If a new cycle starts mid-guard-window, the duck dispatcher's
+      # `script.stop: restore_external_after_cycle` kills the whole
+      # wrapper including remaining shots — that's correct, the new
+      # cycle's duck takes over and its own end will run a fresh
+      # multi-shot guard.
+      - repeat:
+          count: ${external_speaker_late_restore_shots}
           then:
-            - homeassistant.action:
-                action: media_player.volume_set
-                data:
-                  entity_id: "${external_assist_primary_media_player}"
-                data_template:
-                  volume_level: "{{ target }}"
-                variables:
-                  target: !lambda |-
-                    float v = id(user_target_volume);
-                    if (v < 0.0f) v = 0.0f;
-                    if (v > 1.0f) v = 1.0f;
-                    return v;
-                on_error:
-                  - lambda: 'id(external_player_action_error_count)++;'
-                  - logger.log:
-                      level: WARN
-                      format: "volume_set (late restore) failed: %s"
-                      args: ['error.c_str()']
-            - logger.log:
-                format: "Late restore: re-set external player volume to %.3f (override MA late announce-restore)"
-                args:
-                  - 'id(user_target_volume)'
+            - delay: ${external_speaker_late_restore_interval}
+            - if:
+                condition:
+                  and:
+                    - lambda: 'return id(external_speaker_routing_on);'
+                    - binary_sensor.is_on: external_speaker_configured
+                    - lambda: 'return id(user_target_volume_valid);'
+                then:
+                  - homeassistant.action:
+                      action: media_player.volume_set
+                      data:
+                        entity_id: "${external_assist_primary_media_player}"
+                      data_template:
+                        volume_level: "{{ target }}"
+                      variables:
+                        target: !lambda |-
+                          float v = id(user_target_volume);
+                          if (v < 0.0f) v = 0.0f;
+                          if (v > 1.0f) v = 1.0f;
+                          return v;
+                      on_error:
+                        - lambda: 'id(external_player_action_error_count)++;'
 
   # ---------------------------------------------------------------------
   # Pause-mode primitives
