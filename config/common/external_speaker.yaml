@@ -608,31 +608,26 @@ script:
       #   T+5700  MA's text_sensor finally goes 'idle' (TTS actually
       #           done on the external speaker)
       #
-      # Gated to ONLY wait when music wasn't playing at cycle start.
-      # If music IS playing underneath the announce, MA's state stays
-      # 'playing' through and after the announce (music continues) —
-      # wait_until would just hit its timeout and add useless delay.
-      # In that case we fall through to the legacy fixed-delay
-      # behavior, and the user can tune
-      # ${external_speaker_post_response_unduck_delay} for their MA
-      # latency.
+      # Previously this was gated on state_at_cycle_start != "playing"
+      # to skip the wait for the "music underneath" case. But that gate
+      # is unreliable — text_sensor often holds a stale 'playing' from
+      # a previous cycle's TTS announce that wasn't promptly pushed
+      # back to 'idle'. So we ALWAYS wait_until now. For genuine
+      # music-underneath cycles MA's state never leaves 'playing'
+      # and we hit the timeout instead — restore fires at the timeout.
       #
-      # 30s timeout is a safety net against a stuck MA / lost API
-      # link / pathological state. After 30s we restore anyway —
-      # better to land at user_target than leave the music ducked
-      # indefinitely.
-      - if:
+      # 15s timeout balances "long enough to catch slow MA pipelines"
+      # against "not blocking forever on a music-underneath cycle".
+      # After 15s we restore anyway — better to land at user_target
+      # than leave the music ducked indefinitely.
+      - wait_until:
           condition:
-            lambda: 'return id(external_player_state_at_cycle_start) != std::string("playing");'
-          then:
-            - wait_until:
-                condition:
-                  lambda: 'return id(external_player_state_observer).state != std::string("playing");'
-                timeout: 30s
-            # Small settle past MA going idle — the state push from
-            # HA has some latency, and the actual audio tail may
-            # have a few ms past the state change.
-            - delay: 300ms
+            lambda: 'return id(external_player_state_observer).state != std::string("playing");'
+          timeout: 15s
+      # Small settle past MA going idle — the state push from HA has
+      # some latency, and the actual audio tail may have a few ms
+      # past the state change.
+      - delay: 300ms
       - script.execute: restore_external_after_listening
       # Coordinated LED phase reset. The local pipeline finishes the
       # (silent) TTS decode well before MA's external speaker actually

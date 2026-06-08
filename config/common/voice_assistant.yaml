@@ -415,27 +415,46 @@ voice_assistant:
         else:
           - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
           - script.execute: control_leds
-    # Wait for the local audio pipeline to actually finish playing
+    # Wait for the local audio pipeline to actually FINISH playing
     # before scheduling the restore.
     #
-    # WHY: with URL-based streaming TTS (the common case via
+    # WHY: with URL-based streaming TTS (the common case via the
     # assist pipeline), the VA component transitions
     # STREAMING_RESPONSE → RESPONSE_FINISHED → IDLE while the local
-    # speaker_source is still BUFFERING the audio for playback. So
-    # on_end fires *before* speaker_source enters ANNOUNCING for the
-    # response TTS. If we schedule restore_external_after_cycle at
-    # this moment, the +unduck_delay tail starts counting from the
-    # wrong anchor — the restore fires DURING the actual external-
-    # speaker TTS playback (sometimes 5+ seconds before TTS done).
+    # speaker_source is still BUFFERING the audio for playback —
+    # on_end fires BEFORE speaker_source enters ANNOUNCING for the
+    # response TTS (~700ms gap observed in logs). A plain
+    # `wait_until not is_announcing` returns immediately at this
+    # moment because the local pipeline simply hasn't STARTED yet.
+    # Scheduling restore_external_after_cycle then anchors the
+    # +unduck_delay on the wrong moment — and the restore fires
+    # DURING the actual external-speaker TTS playback (sometimes
+    # 5+ seconds before TTS is audibly done).
     #
-    # Fix: a short delay to let the local pipeline potentially enter
-    # ANNOUNCING (200ms covers the 10-50ms typical lag observed in
-    # logs), then wait_until it's no longer announcing. For cycles
-    # that never play TTS (user wake-worded but said nothing, VA
-    # timed out, etc.), is_announcing is already false so wait_until
-    # returns immediately. The 30s timeout is a safety net against a
-    # stuck speaker_source state.
-    - delay: 200ms
+    # Fix: TWO wait_until's in sequence:
+    #
+    #   1) wait_until is_announcing == TRUE   (timeout: 5s)
+    #      Catches the local pipeline entering ANNOUNCING after
+    #      it finally starts buffered playback. For cycles that
+    #      never play TTS (user wake-worded but said nothing,
+    #      VA timed out, etc.), this times out at 5s — that's the
+    #      defensive-fallback path.
+    #
+    #   2) wait_until is_announcing == FALSE  (timeout: 30s)
+    #      With #1 having gated us past the start of playback,
+    #      this now reliably waits for playback to actually finish.
+    #
+    # After both waits, schedule the restore wrapper. The on_state
+    # trigger of speaker_source (in media_player.yaml) ALSO schedules
+    # restore_external_after_cycle when ANNOUNCING→IDLE happens —
+    # mode: single on the wrapper means whichever fires first wins
+    # and the other is a clean no-op. So this on_end path is the
+    # defensive fallback for no-TTS cycles, and the on_state trigger
+    # is the primary path for TTS cycles.
+    - wait_until:
+        condition:
+          media_player.is_announcing: external_media_player
+        timeout: 5s
     - wait_until:
         condition:
           not:
