@@ -415,16 +415,42 @@ voice_assistant:
         else:
           - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
           - script.execute: control_leds
+    # Wait for the local audio pipeline to actually finish playing
+    # before scheduling the restore.
+    #
+    # WHY: with URL-based streaming TTS (the common case via
+    # assist pipeline), the VA component transitions
+    # STREAMING_RESPONSE → RESPONSE_FINISHED → IDLE while the local
+    # speaker_source is still BUFFERING the audio for playback. So
+    # on_end fires *before* speaker_source enters ANNOUNCING for the
+    # response TTS. If we schedule restore_external_after_cycle at
+    # this moment, the +unduck_delay tail starts counting from the
+    # wrong anchor — the restore fires DURING the actual external-
+    # speaker TTS playback (sometimes 5+ seconds before TTS done).
+    #
+    # Fix: a short delay to let the local pipeline potentially enter
+    # ANNOUNCING (200ms covers the 10-50ms typical lag observed in
+    # logs), then wait_until it's no longer announcing. For cycles
+    # that never play TTS (user wake-worded but said nothing, VA
+    # timed out, etc.), is_announcing is already false so wait_until
+    # returns immediately. The 30s timeout is a safety net against a
+    # stuck speaker_source state.
+    - delay: 200ms
+    - wait_until:
+        condition:
+          not:
+            media_player.is_announcing: external_media_player
+        timeout: 30s
     # Schedule the duck/pause restore + (when routing on) the phase
     # reset, after the configured post-response tail.
     #
     # PRIMARY trigger for the restore is the local speaker_source
-    # ANNOUNCING → not-ANNOUNCING transition (in media_player.yaml).
-    # This on_end call is a DEFENSIVE FALLBACK for cycles that never
-    # played a TTS / chime (user wake-worded then said nothing,
-    # VA timed out, etc.) — restore_external_after_cycle is
-    # mode: single, so when the local-state trigger already
-    # scheduled the restore, this call is a clean no-op.
+    # ANNOUNCING → not-ANNOUNCING transition (in media_player.yaml's
+    # on_state). This on_end call is now PROPERLY ordered — it fires
+    # after the local audio is done, same anchor as the on_state
+    # trigger. restore_external_after_cycle is mode: single so
+    # whichever scheduler runs first wins; subsequent calls are
+    # skipped while the delay is in flight.
     - script.execute: restore_external_after_cycle
     # Reset the TTS-mirrored guard for the next cycle. Critical for the
     # assist_satellite.announce / start_conversation path because that

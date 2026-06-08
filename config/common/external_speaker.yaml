@@ -884,17 +884,14 @@ script:
 
   # Convenience wrapper for UI tones. Maps the audio_file ID used by the
   # local play_sound script to a remote filename under ${external_sound_base}/.
-  #
-  # Special case: the wake chime is suppressed in Duck mode IF music
-  # was playing at cycle start. Reason: MA's media_player.play_media
-  # with announce: true pauses the underlying music for the duration
-  # of the announcement, and may not auto-resume after — which
-  # directly defeats Duck mode's whole purpose (music continuity).
-  # The LED ring already gives the user a clear "I heard you"
-  # indication, so dropping the audio chime in this specific case is
-  # the right trade-off. When music isn't playing, or in Pause/Off
-  # modes, the chime mirror runs normally. The TTS response mirror
-  # is always unconditional — you need to hear the response.
+  # All UI tones — wake chime included — are mirrored to MA when
+  # routing is on. The earlier "skip wake chime in Duck mode when
+  # music is playing" gate was removed: MA's announce: true does
+  # briefly pause underlying music for the announce, but the
+  # defensive resume in restore_external_after_listening (via
+  # _ensure_player_resumed_if_was_playing) restores music playback
+  # after the cycle, so the user gets the chime AND keeps their
+  # music continuity.
   - id: play_ui_sound_on_external
     mode: queued
     parameters:
@@ -906,16 +903,6 @@ script:
               - lambda: 'return id(external_speaker_routing_on);'
               - binary_sensor.is_on: external_speaker_configured
               - lambda: 'return std::string("${external_sound_base}") != std::string("");'
-              - lambda: |-
-                  // Skip wake chime when (Duck mode) AND (music was playing).
-                  // All other sound files (jack, timer, button, factory_reset,
-                  // mute) keep their mirror behavior unchanged — they don't
-                  // fire during music sessions in normal use, and the
-                  // momentary MA disruption is acceptable for those one-offs.
-                  bool is_wake_chime = (sound_file == std::string("wake_word_triggered_sound"));
-                  bool is_duck_mode = (std::string("${external_speaker_ducking_mode}") == std::string("Duck"));
-                  bool music_playing = (id(external_player_state_at_cycle_start) == std::string("playing"));
-                  return !(is_wake_chime && is_duck_mode && music_playing);
           then:
             - script.execute:
                 id: play_on_external
