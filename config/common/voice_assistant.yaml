@@ -53,22 +53,39 @@ micro_wake_word:
     # *** First actions on activation — run BEFORE the wake chime is
     # mirrored to MA. ***
     #
-    # 1) Snapshot the external media_player's state. play_sound (a few
-    #    lines down) mirrors the wake chime to MA via
-    #    media_player.play_media with announce: true, which flips MA's
-    #    reported state to 'playing' for the duration of the
-    #    announcement. If we let _pause_external_player /
-    #    _duck_external_player_volume read the live sensor at
-    #    on_listening time, the chime-induced 'playing' fools the
-    #    state gate into thinking music was playing, so we pause /
-    #    duck a player that had nothing to interrupt — and then
-    #    media_play it again at vad_end. The snapshot is the
-    #    pre-cycle truth.
-    - lambda: 'id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;'
-    # 2) Legacy no-op capture (kept so this trigger compiles with the
-    #    historical capture_volume_for_cycle script that other
-    #    callers still reference). The actual user_target_volume
-    #    capture happens elsewhere now (see external_speaker.yaml).
+    # 1) Snapshot the external media_player's state AND volume_level.
+    #    play_sound (a few lines down) mirrors the wake chime to MA
+    #    via media_player.play_media with announce: true, which:
+    #     - flips MA's reported state to 'playing' for the duration
+    #       of the announcement (corrupts the state gate)
+    #     - bumps volume_level to MA's announce_volume (corrupts
+    #       the duck baseline)
+    #
+    #    The snapshot is the pre-cycle truth. Volume is captured
+    #    fresh every cycle (replaces the old buggy auto-recapture
+    #    that sampled MA's announce-restore transients) — gated so
+    #    we only update user_target_volume when (a) MA is actually
+    #    playing music and (b) volume is reasonable (>= 0.05).
+    #    Otherwise the previously-captured value persists.
+    - lambda: |-
+        id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;
+        // Per-cycle volume capture. Gates: music actively playing AND
+        // sensor not NaN AND value isn't a pathological transient.
+        // The 0.05 floor excludes MA's announce-restore artifacts
+        // (we observed values of 0.08, 0.01, 0.00 right after
+        // announce-restore that aren't the user's real volume).
+        if (id(external_player_state_observer).state == "playing"
+            && !std::isnan(id(external_player_volume_level_observer).state)
+            && id(external_player_volume_level_observer).state >= 0.05f) {
+          float v = id(external_player_volume_level_observer).state;
+          if (v > 1.0f) v = 1.0f;
+          id(user_target_volume) = v;
+          id(user_target_volume_valid) = true;
+        }
+    # Legacy no-op capture (kept so this trigger compiles with the
+    # historical capture_volume_for_cycle script that other callers
+    # still reference). The actual user_target_volume capture is
+    # now the lambda above.
     - script.execute: capture_volume_for_cycle
     # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
     - if:
@@ -239,19 +256,35 @@ voice_assistant:
               url: !lambda 'return x;'
           - lambda: 'id(external_tts_mirrored_this_cycle) = true;'
   on_tts_start:
-    # *** First action: snapshot the external media_player's state ***
-    # before on_intent_progress / on_tts_end mirror the TTS URL to MA
-    # (which would flip MA's state to 'playing' for the announce
-    # duration and fool the pause/duck gate). For the assist_satellite.
-    # announce / start_conversation paths, this trigger is the
-    # earliest point where the satellite knows a new cycle is
-    # starting (no on_wake_word_detected, no on_start). Snapshotting
-    # here covers those paths the same way on_wake_word_detected
-    # covers the wake-word path. For the standard assist flow this
-    # snapshot is overwritten relative to the wake-word capture, but
-    # only well into the cycle after pause/duck has already used the
-    # earlier value, so no harm.
-    - lambda: 'id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;'
+    # *** First action: snapshot state AND volume *** before
+    # on_intent_progress / on_tts_end mirror the TTS URL to MA
+    # (which would flip MA's state to 'playing' AND bump volume_level
+    # to MA's announce_volume, corrupting both the state gate and the
+    # duck baseline). For assist_satellite.announce /
+    # start_conversation paths this trigger is the earliest point
+    # where the satellite knows a new cycle is starting (no
+    # on_wake_word_detected, no on_start). Snapshotting here covers
+    # those paths the same way on_wake_word_detected covers the
+    # wake-word path.
+    #
+    # For the standard assist flow (wake-word) the wake-word capture
+    # has already happened earlier in the cycle — re-capturing here
+    # is fine because we're still BEFORE the response TTS mirror,
+    # so the value remains correct.
+    #
+    # Same volume-capture gates as in on_wake_word_detected: only
+    # update user_target_volume when MA is actually playing music
+    # and the value isn't a pathological transient (>= 0.05).
+    - lambda: |-
+        id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;
+        if (id(external_player_state_observer).state == "playing"
+            && !std::isnan(id(external_player_volume_level_observer).state)
+            && id(external_player_volume_level_observer).state >= 0.05f) {
+          float v = id(external_player_volume_level_observer).state;
+          if (v > 1.0f) v = 1.0f;
+          id(user_target_volume) = v;
+          id(user_target_volume_valid) = true;
+        }
     # Belt-and-suspenders capture for the assist_satellite.announce /
     # start_conversation flow, which does NOT fire on_start (no RUN_START
     # event) — on_tts_start with the spoken text is the earliest trigger

@@ -67,10 +67,14 @@ substitutions:
   # restore before we sample its idle volume. 800ms covers typical MA
   # response; raise to 2000ms+ if your MA pipeline is slow / remote.
   external_speaker_duck_capture_settle_delay: "800ms"
-  # Delay between "cycle restore" and "auto-recapture". Lets MA fully
-  # release its announce-volume bump before we re-sample. Auto-recapture
-  # only runs in Duck mode and self-gates on voice-assistant idle so a
-  # rapid follow-up wake word cancels the pending recapture.
+  # DEPRECATED — kept so existing flash YAMLs continue to parse.
+  # The auto-recapture mechanism was removed: it sampled MA's
+  # announce-restore transients (which produce wildly varying
+  # volume_level values right after the restore) and fed them back
+  # into user_target_volume, drifting the duck baseline towards
+  # silence across long conversations / start_conversation flows.
+  # Per-cycle capture at on_wake_word_detected / on_tts_start has
+  # replaced it — see voice_assistant.yaml.
   external_speaker_duck_auto_recapture_delay: "3s"
   # How long to hold the duck (or pause) AFTER the assist cycle's
   # response TTS finishes locally, before restoring the player. The
@@ -723,16 +727,24 @@ script:
                 format: "Restored external player to %.3f"
                 args:
                   - 'id(user_target_volume_valid) ? id(user_target_volume) : (float) atof("${external_speaker_restore_volume}")'
+            # NOTE: Auto-recapture used to be triggered here (3s after
+            # restore). It was removed because MA's announce-restore
+            # cascade produces volume transients (0.08, 0.30, 0.01, ...)
+            # that the auto-recapture sampled at random moments, feeding
+            # wrong values into user_target_volume. Across long
+            # conversations the drift compounded into silence
+            # (0.370 -> 0.080 -> 0.010 -> 0.000). Per-cycle capture at
+            # on_wake_word_detected / on_tts_start (in
+            # voice_assistant.yaml) replaces it — those moments are
+            # BEFORE we perturb MA so the volume is stable and
+            # represents the user's intended level.
+            #
             # Stop the watchdog only if no pause is also outstanding.
             - if:
                 condition:
                   lambda: 'return !id(external_player_currently_paused);'
                 then:
                   - script.stop: external_duck_watchdog
-            # Schedule an auto-recapture in case the user adjusted music
-            # volume on their phone during the cycle. The script self-
-            # gates on idle so a rapid follow-up wake word cancels it.
-            - script.execute: _auto_recapture_user_target_volume
 
   # Defensive resume — handles MA's announce-handling stopping
   # underlying music for the chime/TTS and not auto-resuming
@@ -768,23 +780,6 @@ script:
                 format: "Defensive resume of external player (snapshot=playing, live=%s)"
                 args:
                   - 'id(external_player_state_observer).state.c_str()'
-
-  # Auto-recapture user_target_volume after a duck cycle has finished
-  # and the VA is fully idle. Mode: restart — a new cycle starting
-  # within the delay window cancels the pending recapture cleanly.
-  - id: _auto_recapture_user_target_volume
-    mode: restart
-    then:
-      - delay: ${external_speaker_duck_auto_recapture_delay}
-      - if:
-          condition:
-            and:
-              - lambda: 'return std::string("${external_speaker_ducking_mode}") == std::string("Duck");'
-              - lambda: 'return id(duck_state) == 0;'
-              - lambda: 'return !id(external_player_currently_paused);'
-              - lambda: 'return id(voice_assistant_phase) == ${voice_assist_idle_phase_id};'
-          then:
-            - script.execute: capture_user_target_volume
 
   # ---------------------------------------------------------------------
   # Watchdog
