@@ -76,16 +76,23 @@ substitutions:
   # Per-cycle capture at on_wake_word_detected / on_tts_start has
   # replaced it — see voice_assistant.yaml.
   external_speaker_duck_auto_recapture_delay: "3s"
-  # How long to hold the duck (or pause) AFTER the assist cycle's
-  # response TTS finishes locally, before restoring the player. The
-  # duck now spans: on_listening → STT → response TTS playback →
-  # +this delay → restore. Without this tail, the restore at
-  # on_stt_vad_end would fire DURING TTS playback and collide with
-  # MA's announce-volume bump for the TTS, producing inconsistent
-  # volume. 300ms covers MA's typical network/buffer drain after
-  # the local pipeline finishes; raise to 800ms+ for slow/remote
-  # MA setups.
-  external_speaker_post_response_unduck_delay: "300ms"
+  # How long to hold the duck AND keep the LED in REPLYING after the
+  # LOCAL pipeline considers the TTS done (local speaker_source goes
+  # ANNOUNCING → IDLE). The local pipeline finishes the silent decode
+  # well before MA's external speaker actually starts/finishes
+  # emitting audio (MA fetches the URL, buffers, plays — pipeline
+  # latency 1-2.5s typical). This delay is what bridges that gap:
+  #   * volume restore stays deferred until external speaker is done
+  #   * LED ring stays in REPLYING until external speaker is done
+  # Both are coordinated via this single substitution (see
+  # restore_external_after_cycle).
+  #
+  # Defaults to 1500ms (covers Music Assistant on a typical LAN).
+  # Tune up for slow/remote MA setups (2500-3000ms) or down for
+  # snapcast-local / fast pipelines (500-800ms). Setting too low →
+  # LED goes idle while external speaker still talks AND volume
+  # restore lands while MA is still managing the announce.
+  external_speaker_post_response_unduck_delay: "1500ms"
 
 globals:
   # Fast lambda-readable mirror of the switch state. Updated by the switch
@@ -569,6 +576,28 @@ script:
     then:
       - delay: ${external_speaker_post_response_unduck_delay}
       - script.execute: restore_external_after_listening
+      # Coordinated LED phase reset. The local pipeline finishes the
+      # (silent) TTS decode well before MA's external speaker actually
+      # starts/finishes emitting the audio — so resetting
+      # voice_assistant_phase to IDLE in on_end at "local TTS done"
+      # would flip the LED out of REPLYING while the user is still
+      # hearing the response on the external speaker. By moving the
+      # phase reset here, AFTER the same delay that gates the
+      # volume restore, the LED stays in REPLYING for the full
+      # external-playback window. Tune
+      # ${external_speaker_post_response_unduck_delay} to your MA
+      # pipeline's actual latency (typically 1500-2500ms) for tight
+      # audiovisual coupling. Only resets if phase is currently
+      # REPLYING — protects against a subsequent cycle that already
+      # advanced the phase past REPLYING.
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(external_speaker_routing_on);'
+              - lambda: 'return id(voice_assistant_phase) == ${voice_assist_replying_phase_id};'
+          then:
+            - lambda: 'id(voice_assistant_phase) = ${voice_assist_idle_phase_id};'
+            - script.execute: control_leds
 
   # ---------------------------------------------------------------------
   # Pause-mode primitives

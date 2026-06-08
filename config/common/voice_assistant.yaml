@@ -390,22 +390,41 @@ voice_assistant:
           lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id};
         then:
           - delay: 1s
-    # Reset the voice assistant phase id and reset the LED animations.
-    - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
-    - script.execute: control_leds
-    # Schedule the duck/pause restore, AFTER the configured post-
-    # response tail (${external_speaker_post_response_unduck_delay},
-    # default 300ms). This is the SOLE point where the restore fires
-    # in the normal flow now — previously on_stt_vad_end restored
-    # too early, while MA was still playing the response TTS, which
-    # collided with MA's announce-volume bump and produced erratic
-    # volume. By anchoring at on_end + tail, the duck stays active
-    # for the entire user-visible cycle (chime → STT → reply TTS),
-    # then releases once MA has finished emitting. The wrapper script
-    # is mode: restart, so a new cycle starting within the tail
-    # window (multi-turn / immediate follow-up wake word) cancels
-    # the pending restore — the existing duck remains in effect
-    # without flapping.
+    # Phase reset:
+    #
+    #  - Routing OFF: reset voice_assistant_phase to idle and refresh
+    #    LEDs immediately — local pipeline IS the audible output, so
+    #    on_end ~= "user heard the response".
+    #
+    #  - Routing ON: SKIP the immediate reset. The local speaker_source
+    #    finished decoding the silent local stream a long time before
+    #    MA's external speaker actually emits the audio (MA pipeline
+    #    latency, network buffer, playback startup). If we reset the
+    #    phase here, the LED ring flips out of REPLYING while the
+    #    user is still listening on the external speaker — an
+    #    audiovisual desync. Instead, the reset is deferred to
+    #    restore_external_after_cycle, which delays by
+    #    ${external_speaker_post_response_unduck_delay} (tune this
+    #    to your MA pipeline's actual latency) and resets the phase
+    #    AND restores the volume in one coordinated step.
+    - if:
+        condition:
+          lambda: 'return id(external_speaker_routing_on);'
+        then:
+          - logger.log: "on_end: routing on — deferring phase reset to restore_external_after_cycle"
+        else:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+          - script.execute: control_leds
+    # Schedule the duck/pause restore + (when routing on) the phase
+    # reset, after the configured post-response tail.
+    #
+    # PRIMARY trigger for the restore is the local speaker_source
+    # ANNOUNCING → not-ANNOUNCING transition (in media_player.yaml).
+    # This on_end call is a DEFENSIVE FALLBACK for cycles that never
+    # played a TTS / chime (user wake-worded then said nothing,
+    # VA timed out, etc.) — restore_external_after_cycle is
+    # mode: single, so when the local-state trigger already
+    # scheduled the restore, this call is a clean no-op.
     - script.execute: restore_external_after_cycle
     # Reset the TTS-mirrored guard for the next cycle. Critical for the
     # assist_satellite.announce / start_conversation path because that
