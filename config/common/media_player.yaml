@@ -86,6 +86,12 @@ media_player:
           id: media_mixing_input
           decibel_reduction: 20
           duration: 0.0s
+      # Mark that the local speaker_source is now playing an
+      # announcement (wake chime, response TTS, UI tone). The on_state
+      # handler below uses this to detect the trailing edge — when
+      # state goes back to PLAYING/IDLE — and triggers the external
+      # player restore at that exact moment.
+      - lambda: 'id(speaker_source_was_announcing) = true;'
 
     # Restore audio ducking when not actively playing announcements or running voice assistant
     on_state:
@@ -102,6 +108,39 @@ media_player:
                 id: media_mixing_input
                 decibel_reduction: 0
                 duration: 1.0s
+      # External-player restore anchor: when the local speaker_source
+      # leaves the ANNOUNCING state (chime or TTS just finished
+      # locally), if an external-player duck/pause is still
+      # outstanding, schedule the restore through
+      # restore_external_after_cycle (which adds the +300ms tail to
+      # cover MA's network/buffer drain). The was_announcing flag
+      # ensures we trigger exactly once per ANNOUNCING -> ! ANNOUNCING
+      # transition — not for unrelated state changes (mute toggle,
+      # volume change, etc.) that also fire on_state.
+      #
+      # Multi-turn safety: if a new conversation turn fires
+      # on_listening / on_tts_start before the +300ms tail elapses,
+      # the duck dispatcher's `script.stop: restore_external_after_cycle`
+      # cancels the pending restore — the existing duck stays in effect
+      # without flapping. restore_external_after_cycle is mode: single,
+      # so this on_state trigger and the on_end fallback can both
+      # fire safely; only the FIRST one schedules the restore.
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(speaker_source_was_announcing);'
+              - not:
+                  media_player.is_announcing: external_media_player
+          then:
+            - lambda: 'id(speaker_source_was_announcing) = false;'
+            - if:
+                condition:
+                  or:
+                    - lambda: 'return id(duck_state) == 1;'
+                    - lambda: 'return id(external_player_currently_paused);'
+                then:
+                  - logger.log: "Local speaker_source finished announcing — scheduling external player restore"
+                  - script.execute: restore_external_after_cycle
 
 script:
   # Script executed when we want to play sounds on the device.

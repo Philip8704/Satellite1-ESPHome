@@ -166,6 +166,18 @@ globals:
   - id: external_player_state_at_cycle_start
     type: std::string
     restore_value: no
+  # Set to true when the local speaker_source media_player
+  # (external_media_player) enters the ANNOUNCING state — i.e. our
+  # local pipeline is playing a wake chime or response TTS. Cleared
+  # when the on_state trigger detects the transition back out of
+  # ANNOUNCING. Used to anchor the restore on the LOCAL state-machine
+  # signal "announcement finished" rather than on the VA component's
+  # later on_end event. See media_player.yaml's on_announcement /
+  # on_state for the producer side.
+  - id: speaker_source_was_announcing
+    type: bool
+    restore_value: no
+    initial_value: 'false'
 
 switch:
   - platform: template
@@ -534,20 +546,26 @@ script:
     then:
       - script.execute: restore_external_after_listening
 
-  # Delayed restore wrapper. Called from on_end (and only on_end) so the
-  # duck/pause spans the full cycle: on_listening → STT → response TTS
-  # playback → +this delay → restore. The mode: restart cancels any
-  # pending restore if a new cycle starts within the delay window
-  # (multi-turn / immediate follow-up wake word), so the duck stays
-  # active across rapid cycles without flapping.
+  # Delayed restore wrapper. PRIMARY trigger is the local
+  # speaker_source media_player's ANNOUNCING → not-ANNOUNCING
+  # transition (see media_player.yaml on_state), with on_end's call
+  # as a fallback for cycles that never played a TTS announcement.
   #
-  # Anchored on on_end (not on_tts_end) because on_end fires after the
-  # VA component has fully exited the response state — by then the
-  # local pipeline has finished decoding the TTS and MA's network
-  # buffer has had time to drain. The +300ms tail then covers any
-  # last-mile latency from MA to its physical speaker.
+  # mode: single — the FIRST trigger wins. Subsequent calls during
+  # the delay window are skipped (not restarted). This anchors the
+  # restore on the EARLIEST signal that the local TTS is done,
+  # rather than waiting for the later on_end event. Multi-turn
+  # cycles are still handled correctly because the duck dispatcher
+  # cancels any pending restore via script.stop at the top of every
+  # new on_listening / on_tts_start.
+  #
+  # The configured delay (external_speaker_post_response_unduck_delay,
+  # default 300ms) covers the network/buffer drain between when the
+  # local pipeline considers the TTS done and when MA's actual
+  # external speaker stops emitting it. Raise for slow/remote MA
+  # setups.
   - id: restore_external_after_cycle
-    mode: restart
+    mode: single
     then:
       - delay: ${external_speaker_post_response_unduck_delay}
       - script.execute: restore_external_after_listening
