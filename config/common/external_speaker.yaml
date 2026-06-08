@@ -462,6 +462,15 @@ script:
   - id: duck_external_for_listening
     mode: queued
     then:
+      # Cancel any pending delayed restore from a previous cycle. If
+      # the user wake-words again within the 300ms post-response tail
+      # of the prior cycle, restore_external_after_cycle is still
+      # waiting to fire — and would un-duck us mid-STT of the new
+      # cycle. Killing it here is safe: the new cycle's on_end will
+      # schedule a fresh delayed restore anchored on the new cycle's
+      # actual end. script.stop on an already-stopped script is a
+      # clean no-op, so this fires harmlessly on first cycles too.
+      - script.stop: restore_external_after_cycle
       - lambda: 'id(duck_cycle_id)++;'
       # Substitution-driven dispatch. The lambda is a constant
       # expression at compile time so the optimizer keeps only the

@@ -69,12 +69,24 @@ micro_wake_word:
     #    Otherwise the previously-captured value persists.
     - lambda: |-
         id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;
-        // Per-cycle volume capture. Gates: music actively playing AND
-        // sensor not NaN AND value isn't a pathological transient.
-        // The 0.05 floor excludes MA's announce-restore artifacts
-        // (we observed values of 0.08, 0.01, 0.00 right after
-        // announce-restore that aren't the user's real volume).
-        if (id(external_player_state_observer).state == "playing"
+        // Per-cycle volume capture. Gates:
+        //   - We're NOT already in a duck or pause cycle. Without
+        //     this, a follow-up wake word during the 300ms restore
+        //     tail of the previous cycle would re-capture from
+        //     whatever volume the player is at right now (which
+        //     might be our ducked value, or MA's announce-restore
+        //     transient).
+        //   - Music actively playing (sensor state == "playing").
+        //   - Sensor not NaN.
+        //   - Volume >= 0.05 (rejects MA's pathological
+        //     announce-restore artifacts — we observed 0.00, 0.01,
+        //     0.08 right after MA announce events that aren't real
+        //     user-set volumes).
+        // If any gate fails, user_target_volume keeps its previous
+        // value (restore_value: yes persists it across reboots).
+        if (id(duck_state) == 0
+            && !id(external_player_currently_paused)
+            && id(external_player_state_observer).state == "playing"
             && !std::isnan(id(external_player_volume_level_observer).state)
             && id(external_player_volume_level_observer).state >= 0.05f) {
           float v = id(external_player_volume_level_observer).state;
@@ -272,12 +284,31 @@ voice_assistant:
     # is fine because we're still BEFORE the response TTS mirror,
     # so the value remains correct.
     #
-    # Same volume-capture gates as in on_wake_word_detected: only
-    # update user_target_volume when MA is actually playing music
-    # and the value isn't a pathological transient (>= 0.05).
+    # Same volume-capture gates as in on_wake_word_detected. The
+    # extra (duck_state == 0 && !currently_paused) guard is
+    # ESPECIALLY important here because on_tts_start fires in two
+    # very different situations:
+    #
+    #   1) Standard wake-word flow: on_tts_start for the RESPONSE
+    #      TTS fires LATE in the cycle, after on_listening has
+    #      already ducked. MA's announce-handling has bumped
+    #      volume_level to announce_volume by this point. Without
+    #      the duck_state gate we would capture announce_volume as
+    #      the new user_target — drifting the baseline louder than
+    #      the user had it.
+    #
+    #   2) assist_satellite.announce / start_conversation: on_tts_start
+    #      for the FIRST announce fires before any duck. duck_state
+    #      is 0, gate passes, capture the genuine pre-cycle volume.
+    #
+    # So the gate cleanly separates "first entry into a cycle"
+    # (capture allowed) from "re-triggered mid-cycle" (capture
+    # forbidden).
     - lambda: |-
         id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;
-        if (id(external_player_state_observer).state == "playing"
+        if (id(duck_state) == 0
+            && !id(external_player_currently_paused)
+            && id(external_player_state_observer).state == "playing"
             && !std::isnan(id(external_player_volume_level_observer).state)
             && id(external_player_volume_level_observer).state >= 0.05f) {
           float v = id(external_player_volume_level_observer).state;
