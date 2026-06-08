@@ -200,11 +200,12 @@ voice_assistant:
   on_listening:
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
     - script.execute: control_leds
-    # External routing: duck the MA player to 5% for the listening window.
-    # The pre-duck volume was captured at on_start; this script just sets
-    # the player to 5% and starts the watchdog. Restore happens at
-    # on_stt_vad_end (strictly when listening ends — not during processing
-    # or replying).
+    # External routing: start the duck for the listening window.
+    # The duck stays active through STT, processing, AND the response
+    # TTS playback — restore is delayed until on_end + the configured
+    # post-response tail (default 300ms). This avoids restoring the
+    # volume DURING TTS playback, which would collide with MA's
+    # announce-volume bump for the TTS and produce inconsistent volume.
     - script.execute: duck_external_for_listening
   on_stt_vad_start:
     - lambda: id(voice_assistant_phase) = ${voice_assist_listening_for_command_phase_id};
@@ -212,11 +213,11 @@ voice_assistant:
   on_stt_vad_end:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
     - script.execute: control_leds
-    # User has stopped speaking — restore the external player volume so
-    # background music / next-turn TTS resumes at its normal level. We
-    # intentionally restore here (not at on_end) per the framework spec:
-    # the duck is scoped to *listening*, not the whole assist cycle.
-    - script.execute: restore_external_after_listening
+    # Intentionally NO restore here. The duck must stay active through
+    # the upcoming response TTS playback. Restore is scheduled at
+    # on_end via restore_external_after_cycle (which delays by
+    # ${external_speaker_post_response_unduck_delay} to cover MA's
+    # network/buffer drain before the volume snaps back).
   on_intent_progress:
     - if:
         condition:
@@ -258,6 +259,16 @@ voice_assistant:
     # entry kept so old callers compile); the actual user_target_volume
     # snapshot lives in external_speaker.yaml.
     - script.execute: capture_volume_for_cycle
+    # Idempotent duck — covers assist_satellite.announce paths where
+    # TTS plays BEFORE any on_listening fires (announce-only, or
+    # announce-with-listen where the announce TTS precedes the listen
+    # window). In the standard wake-word flow, on_listening already
+    # ducked us and the dispatcher's primitives self-gate on
+    # duck_state == 0 / !currently_paused — so this is a clean no-op
+    # for that path. Without this trigger, the announce TTS would
+    # play at full music volume (no duck), defeating the purpose of
+    # the framework for announce flows.
+    - script.execute: duck_external_for_listening
     - if:
         condition:
           # The intent_progress trigger didn't start the TTS Reponse
@@ -318,13 +329,20 @@ voice_assistant:
     # Reset the voice assistant phase id and reset the LED animations.
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
-    # Defensive resume — strictly idempotent. resume_external_after_listening
-    # (called via the restore_external_after_listening alias) self-gates
-    # on external_player_currently_paused, so calling it here after
-    # on_stt_vad_end already resumed is a clean no-op. Only actually
-    # resumes when a pause was outstanding (e.g. VA cancelled
-    # mid-listening before vad_end fired).
-    - script.execute: restore_external_after_listening
+    # Schedule the duck/pause restore, AFTER the configured post-
+    # response tail (${external_speaker_post_response_unduck_delay},
+    # default 300ms). This is the SOLE point where the restore fires
+    # in the normal flow now — previously on_stt_vad_end restored
+    # too early, while MA was still playing the response TTS, which
+    # collided with MA's announce-volume bump and produced erratic
+    # volume. By anchoring at on_end + tail, the duck stays active
+    # for the entire user-visible cycle (chime → STT → reply TTS),
+    # then releases once MA has finished emitting. The wrapper script
+    # is mode: restart, so a new cycle starting within the tail
+    # window (multi-turn / immediate follow-up wake word) cancels
+    # the pending restore — the existing duck remains in effect
+    # without flapping.
+    - script.execute: restore_external_after_cycle
     # Reset the TTS-mirrored guard for the next cycle. Critical for the
     # assist_satellite.announce / start_conversation path because that
     # path doesn't fire on_start, so on_end is the only reliable reset

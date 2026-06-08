@@ -72,6 +72,16 @@ substitutions:
   # only runs in Duck mode and self-gates on voice-assistant idle so a
   # rapid follow-up wake word cancels the pending recapture.
   external_speaker_duck_auto_recapture_delay: "3s"
+  # How long to hold the duck (or pause) AFTER the assist cycle's
+  # response TTS finishes locally, before restoring the player. The
+  # duck now spans: on_listening → STT → response TTS playback →
+  # +this delay → restore. Without this tail, the restore at
+  # on_stt_vad_end would fire DURING TTS playback and collide with
+  # MA's announce-volume bump for the TTS, producing inconsistent
+  # volume. 300ms covers MA's typical network/buffer drain after
+  # the local pipeline finishes; raise to 800ms+ for slow/remote
+  # MA setups.
+  external_speaker_post_response_unduck_delay: "300ms"
 
 globals:
   # Fast lambda-readable mirror of the switch state. Updated by the switch
@@ -480,6 +490,24 @@ script:
   - id: resume_external_after_listening
     mode: queued
     then:
+      - script.execute: restore_external_after_listening
+
+  # Delayed restore wrapper. Called from on_end (and only on_end) so the
+  # duck/pause spans the full cycle: on_listening → STT → response TTS
+  # playback → +this delay → restore. The mode: restart cancels any
+  # pending restore if a new cycle starts within the delay window
+  # (multi-turn / immediate follow-up wake word), so the duck stays
+  # active across rapid cycles without flapping.
+  #
+  # Anchored on on_end (not on_tts_end) because on_end fires after the
+  # VA component has fully exited the response state — by then the
+  # local pipeline has finished decoding the TTS and MA's network
+  # buffer has had time to drain. The +300ms tail then covers any
+  # last-mile latency from MA to its physical speaker.
+  - id: restore_external_after_cycle
+    mode: restart
+    then:
+      - delay: ${external_speaker_post_response_unduck_delay}
       - script.execute: restore_external_after_listening
 
   # ---------------------------------------------------------------------
