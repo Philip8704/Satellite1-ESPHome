@@ -202,6 +202,19 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  # True while a wake-word-initiated cycle is in its INITIAL listening
+  # window (between on_wake_word_detected and the first on_tts_start).
+  # Used by voice_assistant.yaml's on_listening to decide whether to
+  # play the wake chime as an audible "I'm listening" cue. Cleared at
+  # on_tts_start so any subsequent on_listening within the same cycle
+  # (multi-turn / follow-up listening after a response TTS) DOES get
+  # a chime — that's the same UX as assist_satellite.announce /
+  # start_conversation flows where the chime announces "MA finished
+  # speaking, now listen for the user's response."
+  - id: wake_word_initiated_this_cycle
+    type: bool
+    restore_value: no
+    initial_value: 'false'
 
 switch:
   - platform: template
