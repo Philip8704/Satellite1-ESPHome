@@ -253,10 +253,16 @@ voice_assistant:
           # A nonempty x variable means a streaming TTS url was sent to the media player
           lambda: 'return !x.empty();'
         then:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
-          - script.execute: control_leds
-          # Start a script that would potentially enable the stop word if the response is longer than a second
-          - script.execute: activate_stop_word_once
+          # NOTE: LED phase change to REPLYING + activate_stop_word_once
+          # used to fire here. They're now moved to media_player.yaml's
+          # on_announcement trigger so the LED transitions to REPLYING
+          # at the moment the local pipeline actually starts playing
+          # audio (which is approximately when MA's external speaker
+          # starts emitting too — both pipelines buffer around the
+          # same moment). Without this change the LED flipped to
+          # REPLYING the instant HA delivered the URL but MA could
+          # still be 1-3s away from actually playing — a confusing
+          # audiovisual desync.
           # When external speaker routing is on, mirror the streaming TTS URL
           # to the configured Music Assistant / HA media_player. The local
           # speaker_source media_player keeps decoding the stream (silent at
@@ -333,15 +339,13 @@ voice_assistant:
     # play at full music volume (no duck), defeating the purpose of
     # the framework for announce flows.
     - script.execute: duck_external_for_listening
-    - if:
-        condition:
-          # The intent_progress trigger didn't start the TTS Reponse
-          lambda: 'return id(voice_assistant_phase) != ${voice_assist_replying_phase_id};'
-        then:
-          - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
-          - script.execute: control_leds
-          # Start a script that would potentially enable the stop word if the response is longer than a second
-          - script.execute: activate_stop_word_once
+    # NOTE: LED phase change to REPLYING + activate_stop_word_once
+    # used to fire here. They're now moved to media_player.yaml's
+    # on_announcement trigger so the LED transitions to REPLYING at
+    # the moment the local pipeline actually starts playing audio
+    # (which is approximately when MA's external speaker starts
+    # emitting too — both pipelines buffer around the same moment).
+    # See the comment in on_intent_progress for details.
   # NOTE: on_tts_start's `x` is the spoken TEXT, not a URL
   # (voice_assistant.cpp:730 fires tts_start_trigger with the response
   # text). We can't mirror here — see on_tts_end below, where x IS a URL

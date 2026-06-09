@@ -92,6 +92,30 @@ media_player:
       # state goes back to PLAYING/IDLE — and triggers the external
       # player restore at that exact moment.
       - lambda: 'id(speaker_source_was_announcing) = true;'
+      # LED phase transition to REPLYING anchored on the LOCAL
+      # ANNOUNCING transition — which is the moment audio actually
+      # starts playing on the local pipeline AND approximately when
+      # MA's external speaker starts emitting (both pipelines buffer
+      # around the same moment). Gated on phase == THINKING so the
+      # wake chime ANNOUNCING (where phase is IDLE or WAITING_FOR_COMMAND)
+      # doesn't false-trigger this.
+      #
+      # Without this gate the LED used to flip to REPLYING in
+      # on_intent_progress / on_tts_start (when HA delivered the URL),
+      # but MA could still be 1-3s away from actually playing —
+      # creating a confusing audiovisual desync where the LED said
+      # "responding" but no sound came out. Now LED says REPLYING
+      # exactly when the user hears the audio start.
+      - if:
+          condition:
+            lambda: 'return id(voice_assistant_phase) == ${voice_assist_thinking_phase_id};'
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+            - script.execute: control_leds
+            # Start the stop-word arming script (gated internally on
+            # routing-off — the stop word can false-trigger on the
+            # satellite's own TTS bleed when routing is on).
+            - script.execute: activate_stop_word_once
 
     # Restore audio ducking when not actively playing announcements or running voice assistant
     on_state:
