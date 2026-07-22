@@ -417,24 +417,29 @@ voice_assistant:
           - delay: 1s
     # Phase reset:
     #
-    #  - Routing OFF: reset voice_assistant_phase to idle and refresh
-    #    LEDs immediately — local pipeline IS the audible output, so
-    #    on_end ~= "user heard the response".
+    #  - Routing ON *and* phase == REPLYING: defer the reset to
+    #    restore_external_after_cycle. The local speaker_source finishes
+    #    decoding the silent local stream well before MA's external
+    #    speaker actually emits the audio; resetting here would flip
+    #    the LED out of REPLYING while the user is still hearing the
+    #    response. The deferred reset (gated on phase == REPLYING)
+    #    resets the phase AND restores the volume in one step.
     #
-    #  - Routing ON: SKIP the immediate reset. The local speaker_source
-    #    finished decoding the silent local stream a long time before
-    #    MA's external speaker actually emits the audio (MA pipeline
-    #    latency, network buffer, playback startup). If we reset the
-    #    phase here, the LED ring flips out of REPLYING while the
-    #    user is still listening on the external speaker — an
-    #    audiovisual desync. Instead, the reset is deferred to
-    #    restore_external_after_cycle, which delays by
-    #    ${external_speaker_post_response_unduck_delay} (tune this
-    #    to your MA pipeline's actual latency) and resets the phase
-    #    AND restores the volume in one coordinated step.
+    #  - EVERYTHING ELSE — routing off, an error cycle, or a cycle
+    #    cancelled before it ever reached REPLYING — reset to idle NOW.
+    #    This must not depend on the deferred path: its reset is gated
+    #    on phase == REPLYING, so any other phase left standing here
+    #    would never be cleared. That was a real bug — an error cycle
+    #    (wake word + silence + STT timeout is the everyday case) with
+    #    routing on left voice_assistant_phase stuck at error, and the
+    #    control_leds error branch re-runs itself every 2s, so the
+    #    satellite sat in the blinking-red error animation until the
+    #    next successful cycle.
     - if:
         condition:
-          lambda: 'return id(external_speaker_routing_on);'
+          and:
+            - lambda: 'return id(external_speaker_routing_on);'
+            - lambda: 'return id(voice_assistant_phase) == ${voice_assist_replying_phase_id};'
         then:
           - logger.log: "on_end: routing on — deferring phase reset to restore_external_after_cycle"
         else:
