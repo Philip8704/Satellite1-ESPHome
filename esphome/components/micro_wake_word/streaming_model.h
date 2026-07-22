@@ -61,6 +61,12 @@ class StreamingModel {
   uint8_t get_probability_cutoff() const { return this->probability_cutoff_; }
   void set_probability_cutoff(uint8_t probability_cutoff) { this->probability_cutoff_ = probability_cutoff; }
 
+  // Number of windows averaged for the detection test. Detection is
+  // ``sum(recent probabilities) > probability_cutoff * sliding_window_size`` — i.e. a MEAN test,
+  // not a count-of-windows-above-threshold. Exposed so sibling components can report it as
+  // diagnostic metadata.
+  size_t get_sliding_window_size() const { return this->sliding_window_size_; }
+
   // The maximum probability observed in the most recently completed sliding window.
   // Written from the inference task in determine_detected(), read from the main loop or
   // sibling components. Kept as an atomic uint8 so the cross-thread access is well defined

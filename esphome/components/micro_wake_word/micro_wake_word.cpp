@@ -318,6 +318,11 @@ void MicroWakeWord::loop() {
     case State::DETECTING_WAKE_WORD: {
       DetectionEvent detection_event;
       while (xQueueReceive(this->detection_queue_, &detection_event, 0)) {
+        // Fan the raw event out first, before the VAD branch and before stop_after_detection_ can
+        // stop() us. Subscribers (mww_training_capture) need the probabilities carried in the event
+        // — the model's published values were already zeroed by reset_probabilities() on the
+        // inference task — and they need the audio tap still running when they stage a capture.
+        this->detection_callback_.call(detection_event);
         if (detection_event.blocked_by_vad) {
           ESP_LOGD(TAG, "Wake word model predicts '%s', but VAD model doesn't.", detection_event.wake_word->c_str());
         } else {

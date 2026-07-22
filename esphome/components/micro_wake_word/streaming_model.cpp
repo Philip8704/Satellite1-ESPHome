@@ -366,6 +366,12 @@ DetectionEvent VADModel::determine_detected() {
   detection_event.average_probability = sum / this->sliding_window_size_;
   detection_event.detected = sum > (this->probability_cutoff_ * this->sliding_window_size_);
 
+  // Publish the snapshot like WakeWordModel does, so sibling components can poll the VAD model's
+  // confidence without locking. Before this, the VAD model never wrote these and they read a
+  // permanent 0 — which is worse than no data at all for anything reporting them as metadata.
+  this->last_max_probability_.store(detection_event.max_probability, std::memory_order_relaxed);
+  this->last_average_probability_.store(detection_event.average_probability, std::memory_order_relaxed);
+
   return detection_event;
 }
 

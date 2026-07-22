@@ -8,7 +8,7 @@ ESPHome firmware for the FutureProofHomes **Satellite1 Core Board** (ESP32-S3 + 
 
 1. YAML packages under `config/` that compose the device feature set.
 2. Custom ESPHome C++/Python components under `esphome/components/` (loaded via `external_components`).
-3. Companion Home Assistant artifacts under `miscellaneous/` (ha_blueprints, an `mww_training_capture` HA add-on).
+3. Companion Home Assistant artifacts under `miscellaneous/` (ha_blueprints, HA packages and scripts).
 
 ## Build / lint / flash commands
 
@@ -59,7 +59,7 @@ Each file is a self-contained feature slice with its own globals/scripts/compone
 - **`buttons.yaml`** / **`timer.yaml`** / **`sendspin.yaml`** / **`mmwave*.yaml`** / **`hat_sensors.yaml`** — feature slices following the same convention.
 - **`wifi_improv.yaml`** — Default Wi-Fi + improv-over-BLE provisioning. The top-level `satellite1.yaml` adds `on_client_connected` waits for BLE + memory flasher to finish before the voice assistant connects.
 - **`external_speaker.yaml`** — External-speaker routing framework (see "External speaker routing & MWW capture" below).
-- **`mww_capture.yaml`** — Near-miss training capture (see same section).
+- **`mww_capture.yaml`** — Wake-word training capture: uploads both detections and near-misses to the microWakeWord trainer (see same section).
 - **`xvf_control.yaml`** — XMOS XVF DSP runtime control plane (beamforming, AEC/AGC/NS tuning, DOA, mic gain). **Opt-in, not loaded by base.yaml** — requires the Phase 3 custom XMOS firmware (see "XVF DSP control plane" section below).
 - **`debug.yaml`** / **`developer.yaml`** — opt-in extras (memory/wifi/xmos debug, dev-only switches).
 
@@ -85,7 +85,7 @@ Active components:
 - **`speaker_source/`** — Custom `media_player` platform exposing `announcement_pipeline` + `media_pipeline` over speakers (driven by `media_player.yaml`).
 - **`media_source/`** — Vendored/extended media sources used by `media_player.yaml`.
 - **`micro_wake_word/`** — Vendored microWakeWord with `WakeWordModel` exposing the cutoff/probability hooks used by `mww_training_capture`.
-- **`mww_training_capture/`** — Records short WAV "near-miss" snippets when wake-word probability lands in a configurable band (above `lower_cutoff`, below the detection cutoff), streams them to a FastAPI add-on (`miscellaneous/tools/mww_training_capture/addon`) for retraining. Config schema is documented in [esphome/components/mww_training_capture/__init__.py:1](esphome/components/mww_training_capture/__init__.py). Exposes `mww_training_capture.enable` / `.disable` actions and an `is_enabled` condition.
+- **`mww_training_capture/`** — Records short WAV clips around wake-word activity and streams them to the [TaterTotterson microWakeWord trainer](https://github.com/TaterTotterson/microWakeWord) (Docker, `POST /api/upload_captured_audio_raw` on port 8789) for retraining. Captures **both** event types: `wake_detected` (the model fired — candidate positive samples) and `close_miss` (probability crossed `lower_cutoff` but never reached the detection cutoff — candidate negatives); the event is reported in the `X-Event-Type` header. Config schema is documented in [esphome/components/mww_training_capture/__init__.py:1](esphome/components/mww_training_capture/__init__.py). Exposes `mww_training_capture.enable` / `.disable` actions and an `is_enabled` condition.
 - **`api/`**, **`const/`**, **`sendspin/`** — supporting overrides / helpers.
 
 C++ code is formatted with **clang-format 18 against the `.clang-format` at repo root** (Werror in CI).
@@ -132,7 +132,7 @@ substitutions:
   external_sound_base: "http://homeassistant.local:8123/local/sounds"  # serves UI tones for the routed player
   external_speaker_wake_sound_delay: "1500ms"                     # wake-chime landing window before listening starts
   external_speaker_restore_volume: "0.5"                          # volume to restore the player to after STT
-  mww_capture_endpoint: "http://homeassistant.local:8765/upload"  # FastAPI add-on URL
+  mww_capture_endpoint: "http://192.168.1.227:8789/api/upload_captured_audio_raw"  # microWakeWord trainer URL
   mww_capture_lower_cutoff: "0.7"                                  # default near-miss cutoff
 ```
 
@@ -152,11 +152,13 @@ The local `speaker_source` `external_media_player` (yes, naming collision with t
 
 ### MWW training capture — `config/common/mww_capture.yaml`
 
-Configures the `mww_training_capture` custom component (vendored at `esphome/components/mww_training_capture/`) with `default_lower_cutoff: ${mww_capture_lower_cutoff}`, `pre_buffer_seconds: 2.0`, `post_buffer_ms: 500`, and `enabled_by_default: false`. The "Wake Word Training Capture" template switch (restore-default-off) calls the component's `enable` / `disable` actions; diagnostic sensors expose `get_capture_count()`, `get_dropped_count()`, and `get_last_wake_word()`.
+Configures the `mww_training_capture` custom component (vendored at `esphome/components/mww_training_capture/`) with `default_lower_cutoff: ${mww_capture_lower_cutoff}`, `pre_buffer_seconds: 2.0`, `post_buffer_ms: 500`, and `enabled_by_default: false`. The "Wake Word Training Capture" template switch (restore-default-off) calls the component's `enable` / `disable` actions; diagnostic sensors expose `get_capture_count()`, `get_detection_capture_count()`, `get_close_miss_capture_count()`, `get_dropped_count()`, `get_last_wake_word()`, and `get_last_event_type()`.
+
+Captures **both** classes a trainer needs, each gated by its own substitution and both defaulting on: `wake_detected` (`${mww_capture_wake_detected}`) for candidate positives, and `close_miss` (`${mww_capture_close_miss}`) for candidate negatives — probability crossed `${mww_capture_lower_cutoff}` but never reached the model's real cutoff. Detections get a shorter cooldown and a short 250 ms post-roll, because `voice_assistant` stops `micro_wake_word` as soon as the pipeline starts and the audio tap goes silent.
+
+Uploads are 16-bit/16 kHz mono WAV POSTed with the header set the [TaterTotterson microWakeWord trainer](https://github.com/TaterTotterson/microWakeWord) expects (`X-Event-Type`, `X-Source-Device`, `X-Wake-Word`, `X-Audio-Format`, `X-Notes`, …) — that trainer is the only supported receiver. Two gates must both be true for an upload: the switch is ON **and** `${mww_capture_endpoint}` is non-empty. The switch's `on_turn_on` refuses to enable (and bounces itself off with an ERROR log) when the endpoint substitution was never overridden.
 
 Key behavior — with an empty explicit `models:` list, the component **auto-registers every non-internal model exposed by `micro_wake_word`** at setup (see `mww_training_capture.cpp:74-82`). This is why the framework can ship without naming `hey_haeris` (or any other user-defined wake word) — the user's YAML adds the model under `micro_wake_word:` and capture picks it up automatically with the default 0.7 cutoff.
-
-The companion FastAPI add-on lives under `miscellaneous/tools/mww_training_capture/addon/`.
 
 ## XVF DSP control plane (`xvf_control` — Phase 2 scaffolding for Phase 3 XMOS work)
 

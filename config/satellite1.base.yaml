@@ -86,23 +86,53 @@ substitutions:
   # announce-volume restore. Raise (1500ms-2000ms) for slow / remote
   # MA setups.
   external_speaker_duck_capture_settle_delay: "800ms"
-  # Settle delay between "cycle restore" and "auto-recapture". Lets
-  # MA fully release its announce-volume bump before we re-sample.
-  # Auto-recapture self-gates on VA idle so a fast follow-up wake
-  # word cancels the pending recapture.
-  external_speaker_duck_auto_recapture_delay: "3s"
+  # How long the duck is held (and the LED kept in REPLYING) after the LOCAL
+  # pipeline finishes decoding the response TTS. MA's external speaker lags
+  # the local pipeline by its own buffer + playback latency, so this bridges
+  # the gap — restoring earlier snaps the music back while the user is still
+  # hearing the response. Measure yours: the log prints "Local speaker_source
+  # finished announcing" and MA's state goes 'idle' when it actually stops.
+  external_speaker_post_response_unduck_delay: "1500ms"
+  # MA re-asserts its own remembered volume 1-2 s after an announce ends,
+  # which stomps our restore. These re-issue the volume_set repeatedly to win
+  # that race — 6 shots x 500 ms = a 3 s guard window past the restore.
+  external_speaker_late_restore_shots: "6"
+  external_speaker_late_restore_interval: "500ms"
 
   # ----------------------------------------------------------------------------
-  # micro_wake_word training capture (near-miss forwarder)
+  # micro_wake_word training capture (wake-word sample forwarder)
   # ----------------------------------------------------------------------------
-  # When the "Wake Word Training Capture" switch is on, any non-internal MWW
-  # model that crosses the lower cutoff (but does not actually trigger) has its
-  # 2s pre-roll uploaded to this endpoint. Empty URL disables uploads even if
-  # the switch is on. Example:
-  #   mww_capture_endpoint: "http://homeassistant.local:8765/upload"
+  # When the "Wake Word Training Capture" switch is on, wake-word audio is
+  # uploaded to this endpoint as 16 kHz mono WAV for retraining. Empty URL
+  # disables uploads even if the switch is on.
+  #
+  # The receiver is the TaterTotterson microWakeWord trainer (Docker, port
+  # 8789), which has a review UI and a full training pipeline. Point this at
+  # your trainer instance, e.g.:
+  #   mww_capture_endpoint: "http://192.168.1.227:8789/api/upload_captured_audio_raw"
   mww_capture_endpoint: ""
   # Probability cutoff (0.0-1.0) above which a near-miss is forwarded.
   mww_capture_lower_cutoff: "0.7"
+  # Which events produce a clip. wake_detected clips are candidate POSITIVE
+  # training samples (the model fired); close_miss clips are candidate
+  # NEGATIVES (probability entered the band but never triggered). A trainer
+  # wants both, so both default on.
+  mww_capture_wake_detected: "true"
+  mww_capture_close_miss: "true"
+  # Real detections are user-initiated and rare, so they get a shorter cooldown
+  # than ambient near-misses, which can flood.
+  mww_capture_detection_cooldown_ms: "1500"
+  # Post-roll for wake_detected clips. Short by design: voice_assistant stops
+  # micro_wake_word the moment the pipeline starts, so the audio tap goes silent
+  # and a longer post-roll captures nothing while delaying the upload.
+  mww_capture_detection_post_buffer_ms: "250"
+  # Body format advertised via X-Audio-Format. "wav" is the only value the
+  # firmware implements (it always emits a complete RIFF WAV).
+  mww_capture_audio_format: "wav"
+  # Free-form label the trainer can group clips by, e.g. "sat1-xmos-livingroom".
+  mww_capture_detection_profile: ""
+  # Free-form note attached to every clip (X-Notes).
+  mww_capture_notes: ""
 
   # ----------------------------------------------------------------------------
   # Wakeword / STT tuning (Phase 1 — works with stock FPH XMOS firmware)

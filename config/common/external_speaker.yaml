@@ -67,15 +67,13 @@ substitutions:
   # restore before we sample its idle volume. 800ms covers typical MA
   # response; raise to 2000ms+ if your MA pipeline is slow / remote.
   external_speaker_duck_capture_settle_delay: "800ms"
-  # DEPRECATED — kept so existing flash YAMLs continue to parse.
-  # The auto-recapture mechanism was removed: it sampled MA's
-  # announce-restore transients (which produce wildly varying
-  # volume_level values right after the restore) and fed them back
-  # into user_target_volume, drifting the duck baseline towards
-  # silence across long conversations / start_conversation flows.
-  # Per-cycle capture at on_wake_word_detected / on_tts_start has
-  # replaced it — see voice_assistant.yaml.
-  external_speaker_duck_auto_recapture_delay: "3s"
+  # NOTE: external_speaker_duck_auto_recapture_delay used to live here. The
+  # auto-recapture mechanism it configured was removed — it sampled MA's
+  # announce-restore transients (wildly varying volume_level values right
+  # after a restore) and fed them back into user_target_volume, drifting the
+  # duck baseline towards silence across long conversations. Per-cycle
+  # capture at on_wake_word_detected / on_tts_start replaced it. Setting the
+  # old substitution in a flash YAML is harmless but has no effect.
   # How long to hold the duck AND keep the LED in REPLYING after the
   # LOCAL pipeline considers the TTS done (local speaker_source goes
   # ANNOUNCING → IDLE). The local pipeline finishes the silent decode

@@ -1,11 +1,18 @@
-# micro_wake_word near-miss training capture.
+# micro_wake_word training-sample capture.
 #
 # The mww_training_capture component subscribes to the same microphone stream
 # as micro_wake_word and keeps a rolling pre-buffer (2 s by default) in PSRAM.
-# Whenever any non-internal MWW model's sliding-window probability crosses
-# ${mww_capture_lower_cutoff} (default 0.7) but did not actually trigger the
-# assistant, a 16-bit/16 kHz mono WAV of pre-buffer + post-buffer is POSTed to
-# ${mww_capture_endpoint}.
+# It uploads a 16-bit/16 kHz mono WAV of pre-buffer + post-buffer to
+# ${mww_capture_endpoint} on two kinds of event:
+#
+#   wake_detected — MWW actually fired. Candidate POSITIVE training sample.
+#   close_miss    — the sliding-window probability crossed
+#                   ${mww_capture_lower_cutoff} (default 0.7) but never reached
+#                   the model's real cutoff, so the assistant never triggered.
+#                   Candidate NEGATIVE training sample.
+#
+# A trainer needs both classes, so both default on. The event is reported in
+# the X-Event-Type header and the receiving UI sorts on it.
 #
 # Two gates must be true for an upload to happen:
 #   1. the "Wake Word Training Capture" switch is ON
@@ -15,10 +22,22 @@
 # non-internal wake-word model exposed by micro_wake_word, so the user's
 # custom hey_haeris (and any other models) participate automatically without
 # the framework needing to know the model id ahead of time.
+#
+# Receiver: the header set targets the TaterTotterson microWakeWord trainer
+# (POST /api/upload_captured_audio_raw, port 8789 by default), which is the
+# only supported destination. Point ${mww_capture_endpoint} at your trainer
+# instance.
 
 substitutions:
   mww_capture_endpoint: ""
   mww_capture_lower_cutoff: "0.7"
+  mww_capture_wake_detected: "true"
+  mww_capture_close_miss: "true"
+  mww_capture_detection_cooldown_ms: "1500"
+  mww_capture_detection_post_buffer_ms: "250"
+  mww_capture_audio_format: "wav"
+  mww_capture_detection_profile: ""
+  mww_capture_notes: ""
 
 mww_training_capture:
   id: mww_capture
@@ -34,11 +53,22 @@ mww_training_capture:
   require_vad: true
   enabled_by_default: false
   upload_url: ${mww_capture_endpoint}
+  # Feeds the X-Source-Device header the trainer groups clips by.
   device_name: ${node_name}
-  on_near_miss_detected:
+  capture_wake_detected: ${mww_capture_wake_detected}
+  capture_close_miss: ${mww_capture_close_miss}
+  detection_cooldown_ms: ${mww_capture_detection_cooldown_ms}
+  detection_post_buffer_ms: ${mww_capture_detection_post_buffer_ms}
+  audio_format: ${mww_capture_audio_format}
+  detection_profile: ${mww_capture_detection_profile}
+  notes: ${mww_capture_notes}
+  # Logs both event types. on_near_miss_detected still exists on the component
+  # (close_miss only) for user YAML, but shipping both here would double-log
+  # every near-miss.
+  on_capture_uploaded:
     - logger.log:
-        format: "MWW near-miss captured: %s (max=%.2f avg=%.2f)"
-        args: ["wake_word.c_str()", "max_prob", "avg_prob"]
+        format: "MWW capture uploaded: %s / %s (max=%.2f avg=%.2f)"
+        args: ["event_type.c_str()", "wake_word.c_str()", "max_prob", "avg_prob"]
 
 switch:
   # User-facing toggle. Persisted across reboots so a device that was
@@ -83,7 +113,7 @@ binary_sensor:
 
 sensor:
   # Diagnostic counters from the component. Useful when debugging whether
-  # near-misses are firing at all (uploads counter) vs firing but the addon
+  # captures are firing at all (uploads counter) vs firing but the receiver
   # is unreachable (drops counter).
   - platform: template
     id: mww_capture_count_sensor
@@ -94,6 +124,29 @@ sensor:
     update_interval: 30s
     lambda: 'return (float) id(mww_capture).get_capture_count();'
 
+  # Split by event type so you can see at a glance whether you're collecting a
+  # balanced set — a trainer wants both positives and negatives.
+  - platform: template
+    id: mww_capture_detections_sensor
+    name: "Wake Word Detections Captured"
+    icon: "mdi:check-decagram-outline"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: 'return (float) id(mww_capture).get_detection_capture_count();'
+
+  - platform: template
+    id: mww_capture_near_misses_sensor
+    name: "Wake Word Near-Misses Captured"
+    icon: "mdi:target-variant"
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: 'return (float) id(mww_capture).get_close_miss_capture_count();'
+
+  # A climbing drop count means captures are being staged but not landing —
+  # unreachable receiver, ring overrun, or the upload slot being contended by
+  # back-to-back events.
   - platform: template
     id: mww_capture_dropped_sensor
     name: "Wake Word Captures Dropped"
@@ -104,13 +157,25 @@ sensor:
     lambda: 'return (float) id(mww_capture).get_dropped_count();'
 
 text_sensor:
-  # The last near-miss the component saw. Convenient when tuning the cutoff:
-  # toggle on for a few minutes, glance at this entity, see which model is
-  # getting close to firing.
+  # The last capture the component made. Convenient when tuning the cutoff:
+  # toggle on for a few minutes, glance at these two entities, see which model
+  # is firing (or getting close to firing).
+  #
+  # NOTE: id stays mww_capture_last_wake_word — the display name changed
+  # because it now covers detections too, but renaming the id would break
+  # anything referencing the entity.
   - platform: template
     id: mww_capture_last_wake_word
-    name: "Last Wake Word Near-Miss"
+    name: "Last Capture Wake Word"
     icon: "mdi:ear-hearing"
     entity_category: diagnostic
     update_interval: 30s
     lambda: 'return id(mww_capture).get_last_wake_word();'
+
+  - platform: template
+    id: mww_capture_last_event_type
+    name: "Last Capture Event Type"
+    icon: "mdi:tag-outline"
+    entity_category: diagnostic
+    update_interval: 30s
+    lambda: 'return id(mww_capture).get_last_event_type();'

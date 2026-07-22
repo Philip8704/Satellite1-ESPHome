@@ -6,9 +6,9 @@ probability climbs into a configurable band that's *high enough* to mean the
 user probably said something close to the wake word but *low enough* that the
 real wake word never triggered.
 
-Captured WAV data is streamed directly to a companion service (the FastAPI app
-under `miscellaneous/tools/mww_training_capture/`) and used as additional
-training data for the microWakeWord training notebooks.
+Captured WAV data is streamed directly to a TaterTotterson microWakeWord
+trainer (``/api/upload_captured_audio_raw``) and used as additional training
+data for the microWakeWord training notebooks.
 
 Example YAML
 ------------
@@ -24,7 +24,7 @@ mww_training_capture:
   pre_buffer_seconds: 2.0
   post_buffer_ms: 500
   cooldown_ms: 4000
-  upload_url: http://homeassistant.local:8765/upload
+  upload_url: http://trainer.local:8789/api/upload_captured_audio_raw
   device_name: satellite1
   models:
     - wake_word_model: hey_jarvis
@@ -59,6 +59,14 @@ CONF_MODELS = "models"
 CONF_WAKE_WORD_MODEL = "wake_word_model"
 CONF_LOWER_CUTOFF = "lower_cutoff"
 CONF_ON_NEAR_MISS_DETECTED = "on_near_miss_detected"
+CONF_AUDIO_FORMAT = "audio_format"
+CONF_DETECTION_PROFILE = "detection_profile"
+CONF_NOTES = "notes"
+CONF_CAPTURE_WAKE_DETECTED = "capture_wake_detected"
+CONF_CAPTURE_CLOSE_MISS = "capture_close_miss"
+CONF_DETECTION_COOLDOWN_MS = "detection_cooldown_ms"
+CONF_DETECTION_POST_BUFFER_MS = "detection_post_buffer_ms"
+CONF_ON_CAPTURE_UPLOADED = "on_capture_uploaded"
 
 mww_training_capture_ns = cg.esphome_ns.namespace("mww_training_capture")
 MwwTrainingCapture = mww_training_capture_ns.class_(
@@ -91,6 +99,22 @@ def _validate_cutoff(value):
     if value <= 0.0 or value >= 1.0:
         raise cv.Invalid("lower_cutoff must be strictly between 0.0 and 1.0")
     return value
+
+
+def _validate_audio_format(value):
+    """The component only knows how to emit a full WAV. ``pcm_s16le`` is a valid
+    value on the receiving end (Tater synthesizes the header itself), but shipping
+    the key as accepted would make the firmware advertise a body format it doesn't
+    actually produce."""
+    value = cv.string_strict(value).strip().lower()
+    if value == "wav":
+        return value
+    if value == "pcm_s16le":
+        raise cv.Invalid(
+            "only 'wav' is currently implemented; the component always emits a "
+            "complete WAV (44-byte RIFF header + PCM)"
+        )
+    raise cv.Invalid(f"unsupported audio_format '{value}' (expected 'wav')")
 
 
 MODEL_SCHEMA = cv.Schema(
@@ -126,7 +150,30 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_UPLOAD_URL): cv.string_strict,
         cv.Optional(CONF_DEVICE_NAME, default="unknown_device"): cv.string_strict,
         cv.Optional(CONF_MODELS, default=[]): cv.ensure_list(MODEL_SCHEMA),
+        # --- Capture event selection -------------------------------------------
+        # wake_detected clips are candidate POSITIVE training samples; close_miss
+        # clips are candidate NEGATIVES. Both default on — a trainer needs both.
+        cv.Optional(CONF_CAPTURE_WAKE_DETECTED, default=True): cv.boolean,
+        cv.Optional(CONF_CAPTURE_CLOSE_MISS, default=True): cv.boolean,
+        # Real detections are user-initiated and rare, so they get a shorter
+        # cooldown than ambient near-misses (which can flood).
+        cv.Optional(CONF_DETECTION_COOLDOWN_MS, default=1500): cv.int_range(
+            min=0, max=60000
+        ),
+        # Short by design: voice_assistant stops micro_wake_word the moment the
+        # pipeline starts, so the audio tap goes silent and a long post-roll only
+        # adds latency without capturing anything.
+        cv.Optional(CONF_DETECTION_POST_BUFFER_MS, default=250): cv.int_range(
+            min=0, max=2000
+        ),
+        # --- Upload metadata ----------------------------------------------------
+        cv.Optional(CONF_AUDIO_FORMAT, default="wav"): _validate_audio_format,
+        cv.Optional(CONF_DETECTION_PROFILE, default=""): cv.string_strict,
+        cv.Optional(CONF_NOTES, default=""): cv.string_strict,
         cv.Optional(CONF_ON_NEAR_MISS_DETECTED): automation.validate_automation(
+            single=True
+        ),
+        cv.Optional(CONF_ON_CAPTURE_UPLOADED): automation.validate_automation(
             single=True
         ),
     }
@@ -161,6 +208,13 @@ async def to_code(config):
     cg.add(var.set_initial_enabled(config[CONF_ENABLED_BY_DEFAULT]))
     cg.add(var.set_upload_url(config[CONF_UPLOAD_URL]))
     cg.add(var.set_device_name(config[CONF_DEVICE_NAME]))
+    cg.add(var.set_capture_wake_detected(config[CONF_CAPTURE_WAKE_DETECTED]))
+    cg.add(var.set_capture_close_miss(config[CONF_CAPTURE_CLOSE_MISS]))
+    cg.add(var.set_detection_cooldown_ms(config[CONF_DETECTION_COOLDOWN_MS]))
+    cg.add(var.set_detection_post_buffer_ms(config[CONF_DETECTION_POST_BUFFER_MS]))
+    cg.add(var.set_audio_format_header(config[CONF_AUDIO_FORMAT]))
+    cg.add(var.set_detection_profile(config[CONF_DETECTION_PROFILE]))
+    cg.add(var.set_notes(config[CONF_NOTES]))
 
     for model_conf in config[CONF_MODELS]:
         wake_word_model = await cg.get_variable(model_conf[CONF_WAKE_WORD_MODEL])
@@ -175,6 +229,18 @@ async def to_code(config):
             var.get_near_miss_trigger(),
             [
                 (cg.std_string, "wake_word"),
+                (cg.float_, "max_prob"),
+                (cg.float_, "avg_prob"),
+            ],
+            conf,
+        )
+
+    if conf := config.get(CONF_ON_CAPTURE_UPLOADED):
+        await automation.build_automation(
+            var.get_capture_uploaded_trigger(),
+            [
+                (cg.std_string, "wake_word"),
+                (cg.std_string, "event_type"),
                 (cg.float_, "max_prob"),
                 (cg.float_, "avg_prob"),
             ],

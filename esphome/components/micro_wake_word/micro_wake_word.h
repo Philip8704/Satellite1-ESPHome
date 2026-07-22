@@ -72,6 +72,10 @@ class MicroWakeWord : public Component
 
   // Intended for the voice assistant component to fetch VAD status
   bool get_vad_state() { return this->vad_state_; }
+
+  // Intended for sibling components (e.g. mww_training_capture) that want the VAD model's
+  // latest sliding-window probabilities as capture metadata. May be nullptr before setup.
+  VADModel *get_vad_model() { return this->vad_model_.get(); }
 #endif
 
   // Intended for the voice assistant component to access which wake words are available
@@ -82,6 +86,17 @@ class MicroWakeWord : public Component
     this->audio_callback_.add(std::move(callback));
   }
 
+  /// @brief Subscribe to every DetectionEvent drained from the inference task's queue.
+  ///
+  /// Fires on the main loop for BOTH real detections and VAD-blocked ones, so a subscriber can
+  /// distinguish them via ``DetectionEvent::blocked_by_vad``. Critically, the event carries the
+  /// max/average probabilities as they were snapshotted inside determine_detected() — i.e. before
+  /// reset_probabilities() zeroes the model's published values — so a subscriber gets the real
+  /// scores that caused the detection rather than the post-reset zeroes it would read by polling.
+  void add_detection_callback(std::function<void(const DetectionEvent &)> &&callback) {
+    this->detection_callback_.add(std::move(callback));
+  }
+
  protected:
   microphone::MicrophoneSource *microphone_source_{nullptr};
   Trigger<std::string> wake_word_detected_trigger_;
@@ -90,6 +105,7 @@ class MicroWakeWord : public Component
   std::weak_ptr<RingBuffer> ring_buffer_;
   std::vector<WakeWordModel *> wake_word_models_;
   CallbackManager<void(const std::vector<uint8_t> &)> audio_callback_{};
+  CallbackManager<void(const DetectionEvent &)> detection_callback_{};
 
 #ifdef USE_MICRO_WAKE_WORD_VAD
   std::unique_ptr<VADModel> vad_model_;
