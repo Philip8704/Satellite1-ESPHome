@@ -42,11 +42,10 @@ void MwwTrainingCapture::setup() {
   if (this->ring_capacity_ < this->sample_rate_) {
     this->ring_capacity_ = this->sample_rate_;  // hard floor of 1 s
   }
-  const uint64_t configured_capture_samples =
-      (uint64_t)(this->pre_buffer_seconds_ * this->sample_rate_) +
-      ((uint64_t) max_post_buffer_ms * this->sample_rate_ / 1000ULL);
-  this->capture_buffer_capacity_ = (size_t) std::min<uint64_t>(
-      std::max<uint64_t>(configured_capture_samples, 1), (uint64_t) this->ring_capacity_);
+  const uint64_t configured_capture_samples = (uint64_t) (this->pre_buffer_seconds_ * this->sample_rate_) +
+                                              ((uint64_t) max_post_buffer_ms * this->sample_rate_ / 1000ULL);
+  this->capture_buffer_capacity_ =
+      (size_t) std::min<uint64_t>(std::max<uint64_t>(configured_capture_samples, 1), (uint64_t) this->ring_capacity_);
 
   RAMAllocator<int16_t> alloc;
   this->ring_ = alloc.allocate(this->ring_capacity_);
@@ -90,8 +89,7 @@ void MwwTrainingCapture::setup() {
 
   ESP_LOGI(TAG, "Training capture ready (ring=%u samples / %.1f s, capture=%u samples, models=%u, enabled=%s)",
            (unsigned) this->ring_capacity_, total_seconds, (unsigned) this->capture_buffer_capacity_,
-           (unsigned) this->models_.size(),
-           this->enabled_ ? "yes" : "no");
+           (unsigned) this->models_.size(), this->enabled_ ? "yes" : "no");
 }
 
 MwwTrainingCapture::ModelEntry MwwTrainingCapture::make_entry_(micro_wake_word::WakeWordModel *model,
@@ -350,8 +348,8 @@ void MwwTrainingCapture::stage_capture_(ModelEntry &entry, CaptureEvent event, u
 
   ESP_LOGD(TAG, "%s queued: %s max=%.2f avg=%.2f (cutoff=%.2f, vad_blocked=%s, samples=%llu target=%llu)",
            event_type_str_(event), this->capture_meta_.wake_word.c_str(), max_prob / 255.0f, avg_prob / 255.0f,
-           this->capture_meta_.prob_cutoff / 255.0f, blocked_by_vad ? "yes" : "no",
-           (unsigned long long) total_written, (unsigned long long) this->capture_target_total_);
+           this->capture_meta_.prob_cutoff / 255.0f, blocked_by_vad ? "yes" : "no", (unsigned long long) total_written,
+           (unsigned long long) this->capture_target_total_);
 }
 
 void MwwTrainingCapture::on_detection_event_(const micro_wake_word::DetectionEvent &event) {
@@ -456,13 +454,13 @@ void MwwTrainingCapture::finish_pending_capture_() {
     // every wake_detected capture would burn the full timeout before uploading. The pre-roll
     // already contains the wake word, so finishing short is correct rather than degraded.
     if (this->mww_ != nullptr && !this->mww_->is_running()) {
-      ESP_LOGD(TAG, "MWW stopped mid-capture; finishing with %llu of %llu samples",
-               (unsigned long long) total_written, (unsigned long long) this->capture_target_total_);
+      ESP_LOGD(TAG, "MWW stopped mid-capture; finishing with %llu of %llu samples", (unsigned long long) total_written,
+               (unsigned long long) this->capture_target_total_);
       this->capture_target_total_ = total_written;
     } else if (now - this->capture_queued_ms_ < this->capture_max_wait_ms_) {
       if (now - this->last_debug_log_ms_ > 1000) {
-        ESP_LOGD(TAG, "Waiting for capture post-buffer: samples=%llu target=%llu",
-                 (unsigned long long) total_written, (unsigned long long) this->capture_target_total_);
+        ESP_LOGD(TAG, "Waiting for capture post-buffer: samples=%llu target=%llu", (unsigned long long) total_written,
+                 (unsigned long long) this->capture_target_total_);
         this->last_debug_log_ms_ = now;
       }
       return;
@@ -483,14 +481,14 @@ void MwwTrainingCapture::finish_pending_capture_() {
   // Compute slice we want: [target - (pre+post) samples, target). We copy the
   // slice into a persistent PSRAM buffer before upload so Wi-Fi latency cannot
   // race the live audio ring and corrupt the beginning of the capture.
-  const uint64_t pre_samples = (uint64_t)(this->pre_buffer_seconds_ * this->sample_rate_);
+  const uint64_t pre_samples = (uint64_t) (this->pre_buffer_seconds_ * this->sample_rate_);
   // Use the post-roll staged with THIS capture, not the close-miss default — the two event types
   // have different post buffers and recomputing here would over-reach into the pre-roll.
   const uint64_t post_samples = this->capture_post_samples_;
   const uint64_t total_slice = pre_samples + post_samples;
-  const uint64_t slice_len = std::min<uint64_t>(std::min<uint64_t>(total_slice, (uint64_t) this->ring_capacity_),
-                                               std::min<uint64_t>((uint64_t) this->capture_buffer_capacity_,
-                                                                  this->capture_target_total_));
+  const uint64_t slice_len =
+      std::min<uint64_t>(std::min<uint64_t>(total_slice, (uint64_t) this->ring_capacity_),
+                         std::min<uint64_t>((uint64_t) this->capture_buffer_capacity_, this->capture_target_total_));
   const uint64_t start_sample = this->capture_target_total_ - slice_len;
   if (start_sample > this->capture_target_total_) {
     // Underflow guard
@@ -571,8 +569,8 @@ void MwwTrainingCapture::start_upload_task_(size_t sample_count) {
   this->capture_upload_started_ = true;
   this->capture_upload_started_ms_ = millis();
 
-  const BaseType_t result = xTaskCreate(
-      MwwTrainingCapture::upload_task_, "mww_capture_upload", 8192, this, 1, &this->capture_upload_task_);
+  const BaseType_t result =
+      xTaskCreate(MwwTrainingCapture::upload_task_, "mww_capture_upload", 8192, this, 1, &this->capture_upload_task_);
   if (result != pdPASS) {
     ESP_LOGW(TAG, "Failed to start capture upload task; dropping capture");
     this->capture_upload_success_.store(false, std::memory_order_relaxed);
@@ -601,7 +599,7 @@ bool MwwTrainingCapture::upload_wav_(const int16_t *samples, size_t sample_count
     return false;
   }
 
-  const uint32_t data_bytes = (uint32_t)(sample_count * sizeof(int16_t));
+  const uint32_t data_bytes = (uint32_t) (sample_count * sizeof(int16_t));
   const uint32_t total_bytes = 44 + data_bytes;
   const uint32_t riff_size = 36 + data_bytes;
   const uint16_t channels = 1;
@@ -646,8 +644,8 @@ bool MwwTrainingCapture::upload_wav_(const int16_t *samples, size_t sample_count
   std::string safe_wake_word;
   safe_wake_word.reserve(meta.wake_word.size());
   for (char c : meta.wake_word) {
-    const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' ||
-                    c == '_' || c == '-';
+    const bool ok =
+        (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' || c == '_' || c == '-';
     safe_wake_word.push_back(ok ? c : '_');
     if (safe_wake_word.size() >= 48)
       break;
@@ -709,14 +707,14 @@ bool MwwTrainingCapture::upload_wav_(const int16_t *samples, size_t sample_count
   uint8_t wav_header[44];
   size_t header_pos = 0;
   auto push32 = [&wav_header, &header_pos](uint32_t v) {
-    wav_header[header_pos++] = (uint8_t)(v & 0xFF);
-    wav_header[header_pos++] = (uint8_t)((v >> 8) & 0xFF);
-    wav_header[header_pos++] = (uint8_t)((v >> 16) & 0xFF);
-    wav_header[header_pos++] = (uint8_t)((v >> 24) & 0xFF);
+    wav_header[header_pos++] = (uint8_t) (v & 0xFF);
+    wav_header[header_pos++] = (uint8_t) ((v >> 8) & 0xFF);
+    wav_header[header_pos++] = (uint8_t) ((v >> 16) & 0xFF);
+    wav_header[header_pos++] = (uint8_t) ((v >> 24) & 0xFF);
   };
   auto push16 = [&wav_header, &header_pos](uint16_t v) {
-    wav_header[header_pos++] = (uint8_t)(v & 0xFF);
-    wav_header[header_pos++] = (uint8_t)((v >> 8) & 0xFF);
+    wav_header[header_pos++] = (uint8_t) (v & 0xFF);
+    wav_header[header_pos++] = (uint8_t) ((v >> 8) & 0xFF);
   };
   auto push_str = [&wav_header, &header_pos](const char *s) {
     for (; *s != '\0'; ++s) {
@@ -728,8 +726,8 @@ bool MwwTrainingCapture::upload_wav_(const int16_t *samples, size_t sample_count
   push32(riff_size);
   push_str("WAVE");
   push_str("fmt ");
-  push32(16);                  // fmt chunk size
-  push16(1);                   // PCM format
+  push32(16);  // fmt chunk size
+  push16(1);   // PCM format
   push16(channels);
   push32(this->sample_rate_);
   push32(byte_rate);
@@ -742,12 +740,11 @@ bool MwwTrainingCapture::upload_wav_(const int16_t *samples, size_t sample_count
   uint8_t chunk[512];
   size_t sample_offset = 0;
   while (ok && sample_offset < sample_count) {
-    const size_t samples_this_chunk =
-        std::min<size_t>(sizeof(chunk) / sizeof(int16_t), sample_count - sample_offset);
+    const size_t samples_this_chunk = std::min<size_t>(sizeof(chunk) / sizeof(int16_t), sample_count - sample_offset);
     for (size_t i = 0; i < samples_this_chunk; ++i) {
       const int16_t sample = samples[sample_offset + i];
-      chunk[i * 2] = (uint8_t)(((uint16_t) sample) & 0xFF);
-      chunk[i * 2 + 1] = (uint8_t)((((uint16_t) sample) >> 8) & 0xFF);
+      chunk[i * 2] = (uint8_t) (((uint16_t) sample) & 0xFF);
+      chunk[i * 2 + 1] = (uint8_t) ((((uint16_t) sample) >> 8) & 0xFF);
     }
     ok = write_all(chunk, (int) (samples_this_chunk * sizeof(int16_t)));
     sample_offset += samples_this_chunk;
