@@ -22,7 +22,7 @@ struct AudioSinkAdapter : public audio::AudioSinkCallback {
 }  // namespace
 
 // TODO: Remove this. Take out unnecessary logs and change useful ones to be VERBOSE level
-//#define SENDSPIN_MEDIA_SOURCE_DEBUG
+// #define SENDSPIN_MEDIA_SOURCE_DEBUG
 
 static const int64_t HARD_SYNC_THRESHOLD_US = 5000;
 static const int64_t HARD_SYNC_SETTLE_THRESHOLD_US = 500;  // Tighter threshold used while settling after a hard sync

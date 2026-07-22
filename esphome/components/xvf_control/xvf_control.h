@@ -27,9 +27,7 @@ class XvfControl : public Component, public satellite1::Satellite1SPIService {
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
 
   void set_doa_poll_interval_ms(uint32_t ms) { this->doa_poll_interval_ms_ = ms; }
-  void set_capability_probed_trigger(Trigger<uint32_t> *trigger) {
-    this->capability_probed_trigger_ = trigger;
-  }
+  void set_capability_probed_trigger(Trigger<uint32_t> *trigger) { this->capability_probed_trigger_ = trigger; }
 
   // ----- Probe state ------------------------------------------------------
   bool is_servicer_present() const { return this->servicer_present_; }

@@ -60,8 +60,7 @@ template<typename... Ts> class GetTrackProgressAction : public Action<Ts...>, pu
     this->then_.play(progress, x...);
   }
 
-  void play(const Ts &...x) override { /* ignore - see play_complex */
-  }
+  void play(const Ts &...x) override { /* ignore - see play_complex */ }
 
   void stop() override { this->then_.stop(); }
 

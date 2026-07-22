@@ -120,20 +120,18 @@ void XvfControl::probe_capabilities_() {
 
   std::memcpy(this->fw_feature_version_, fw_version, sizeof(fw_version));
 
-  this->capability_flags_ =
-      static_cast<uint32_t>(capability_buf[0]) | (static_cast<uint32_t>(capability_buf[1]) << 8) |
-      (static_cast<uint32_t>(capability_buf[2]) << 16) | (static_cast<uint32_t>(capability_buf[3]) << 24);
+  this->capability_flags_ = static_cast<uint32_t>(capability_buf[0]) | (static_cast<uint32_t>(capability_buf[1]) << 8) |
+                            (static_cast<uint32_t>(capability_buf[2]) << 16) |
+                            (static_cast<uint32_t>(capability_buf[3]) << 24);
 
-  const bool any_version =
-      (fw_version[0] | fw_version[1] | fw_version[2] | fw_version[3]) != 0;
+  const bool any_version = (fw_version[0] | fw_version[1] | fw_version[2] | fw_version[3]) != 0;
   this->servicer_present_ = any_version || this->capability_flags_ != 0;
 
   // One-shot mic_count probe. Cached for the lifetime of the boot —
   // it's a compile-time property of the running XMOS firmware.
   if (this->servicer_present_) {
     uint8_t mc = 0;
-    if (this->read_cmd_(satellite1::audio_cmd::MIC_COUNT, &mc, 1) &&
-        mc >= 2 && mc <= 8) {
+    if (this->read_cmd_(satellite1::audio_cmd::MIC_COUNT, &mc, 1) && mc >= 2 && mc <= 8) {
       this->cached_mic_count_ = mc;
     } else {
       // Servicer present but mic_count cmd not implemented — assume 2
@@ -143,8 +141,8 @@ void XvfControl::probe_capabilities_() {
   }
 
   if (this->servicer_present_) {
-    ESP_LOGI(TAG, "XVF audio servicer present: caps=0x%08X fw=v%u.%u.%u",
-             (unsigned) this->capability_flags_, fw_version[0], fw_version[1], fw_version[2]);
+    ESP_LOGI(TAG, "XVF audio servicer present: caps=0x%08X fw=v%u.%u.%u", (unsigned) this->capability_flags_,
+             fw_version[0], fw_version[1], fw_version[2]);
   } else {
     ESP_LOGI(TAG, "XVF audio servicer absent (stock FPH firmware) — entities will stay disabled");
   }
@@ -180,12 +178,9 @@ void XvfControl::poll_pipeline_stats_() {
 
   // Skip frames_since_boot (bytes 0..3) — useful for debugging but not a
   // first-class HA entity yet.
-  this->cached_dsp_load_q8_8_ =
-      static_cast<uint16_t>(buf[4]) | (static_cast<uint16_t>(buf[5]) << 8);
-  this->cached_mic_l_clip_count_ =
-      static_cast<uint16_t>(buf[6]) | (static_cast<uint16_t>(buf[7]) << 8);
-  this->cached_mic_r_clip_count_ =
-      static_cast<uint16_t>(buf[8]) | (static_cast<uint16_t>(buf[9]) << 8);
+  this->cached_dsp_load_q8_8_ = static_cast<uint16_t>(buf[4]) | (static_cast<uint16_t>(buf[5]) << 8);
+  this->cached_mic_l_clip_count_ = static_cast<uint16_t>(buf[6]) | (static_cast<uint16_t>(buf[7]) << 8);
+  this->cached_mic_r_clip_count_ = static_cast<uint16_t>(buf[8]) | (static_cast<uint16_t>(buf[9]) << 8);
   // AEC ref clip counter at buf[10..11] is captured here for future use.
   this->cached_doa_angle_deg_ =
       static_cast<int16_t>(static_cast<uint16_t>(buf[12]) | (static_cast<uint16_t>(buf[13]) << 8));
@@ -200,14 +195,11 @@ bool XvfControl::set_beam_mode(satellite1::BeamMode mode) {
     return false;
   // Mode-specific capability gate — refuses to send an adaptive write to
   // firmware that only supports fixed beamforming.
-  const uint32_t needed = (mode == satellite1::BeamMode::FIXED)
-                              ? satellite1::audio_capability::BEAM_FIXED
-                              : (mode == satellite1::BeamMode::ADAPTIVE)
-                                    ? satellite1::audio_capability::BEAM_ADAPTIVE
-                                    : satellite1::audio_capability::BEAM_TRACKING;
+  const uint32_t needed = (mode == satellite1::BeamMode::FIXED)      ? satellite1::audio_capability::BEAM_FIXED
+                          : (mode == satellite1::BeamMode::ADAPTIVE) ? satellite1::audio_capability::BEAM_ADAPTIVE
+                                                                     : satellite1::audio_capability::BEAM_TRACKING;
   if (!this->has_capability(needed)) {
-    ESP_LOGW(TAG, "set_beam_mode(%u) rejected — capability bit 0x%02X not present", (unsigned) mode,
-             (unsigned) needed);
+    ESP_LOGW(TAG, "set_beam_mode(%u) rejected — capability bit 0x%02X not present", (unsigned) mode, (unsigned) needed);
     return false;
   }
   const uint8_t v = static_cast<uint8_t>(mode);

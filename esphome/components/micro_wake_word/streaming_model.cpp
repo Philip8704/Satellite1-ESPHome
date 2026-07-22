@@ -59,8 +59,7 @@ bool StreamingModel::load_model_() {
   if (!this->tensor_arena_size_probed_) {
     size_t probed_size = this->probe_arena_size_();
     if (probed_size > 0) {
-      ESP_LOGD(TAG, "Probed tensor arena size: %zu bytes (manifest was %zu)", probed_size,
-               this->tensor_arena_size_);
+      ESP_LOGD(TAG, "Probed tensor arena size: %zu bytes (manifest was %zu)", probed_size, this->tensor_arena_size_);
       this->tensor_arena_size_ = probed_size;
     } else {
       ESP_LOGW(TAG, "Arena size probe failed, using manifest size: %zu bytes", this->tensor_arena_size_);
