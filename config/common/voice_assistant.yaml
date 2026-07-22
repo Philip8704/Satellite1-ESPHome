@@ -69,14 +69,11 @@ micro_wake_word:
     #    Otherwise the previously-captured value persists.
     - lambda: |-
         id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;
-        // Mark this cycle as wake-word-initiated. on_listening uses
-        // this to skip the audible "I'm listening" chime for the
-        // INITIAL listening window — we already played the chime
-        // here in on_wake_word_detected, no need to repeat it. Flag
-        // is cleared in on_tts_start so any post-TTS listening (e.g.
-        // multi-turn follow-up after a response) DOES get a chime,
-        // matching the cue UX of announce / start_conversation flows.
-        id(wake_word_initiated_this_cycle) = true;
+        // NOTE: no chime is played here anymore. The wake chime moved to
+        // on_listening so that when two satellites hear the same wake word,
+        // only the one HA grants the pipeline to actually chimes — the race
+        // loser's voice_assistant.start is rejected with
+        // duplicate_wake_up_detected and never reaches on_listening.
         // Per-cycle volume capture. Gates:
         //   - We're NOT already in a duck or pause cycle. Without
         //     this, a follow-up wake word during the 300ms restore
@@ -136,36 +133,20 @@ micro_wake_word:
                             - media_player.stop:
                                 announcement: true
                                 id: external_media_player
-                          # Start the voice assistant and play the wake sound, if enabled
+                          # Start the voice assistant immediately. The wake
+                          # chime deliberately does NOT play here — it plays
+                          # in on_listening instead, i.e. only once HA has
+                          # actually granted this satellite the pipeline.
+                          # With two satellites in earshot both detect the
+                          # wake word, but HA rejects the race loser's
+                          # voice_assistant.start with
+                          # duplicate_wake_up_detected, so the loser never
+                          # reaches on_listening and stays silent. Playing
+                          # the chime up-front (as this used to) made BOTH
+                          # satellites ding while only one listened.
+                          # Side benefit: no more pre-listen chime delay, so
+                          # wake-to-listen is ~1.5s faster with routing on.
                           else:
-                            - if:
-                                condition:
-                                  switch.is_on: wake_sound
-                                then:
-                                  - script.execute:
-                                      id: play_sound
-                                      priority: true
-                                      sound_file: "wake_word_triggered_sound"
-                                  # Wait for the wake chime to actually
-                                  # finish playing before opening the mic.
-                                  # If routing is on, the chime goes through
-                                  # the HA -> MA -> network -> remote
-                                  # speaker pipeline (typically 800-1500ms
-                                  # of latency + chime length). If routing
-                                  # is off, the local FLAC chime is about
-                                  # 500ms long and we add a small buffer.
-                                  # Before this fix the hardcoded 300ms
-                                  # opened the mic before the chime even
-                                  # finished, which made the listening
-                                  # window feel artificially short to
-                                  # anyone relying on the audio cue.
-                                  - if:
-                                      condition:
-                                        lambda: 'return id(external_speaker_routing_on);'
-                                      then:
-                                        - delay: ${external_speaker_wake_sound_delay}
-                                      else:
-                                        - delay: ${local_wake_sound_to_listen_delay}
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
 
@@ -237,40 +218,31 @@ voice_assistant:
   on_listening:
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
     - script.execute: control_leds
-    # Audible "I'm listening now" chime for paths that didn't already
-    # play a wake chime up-front. This is the listening cue users
-    # expect from assist_satellite.announce(listen=true) /
-    # start_conversation flows where the satellite finished a TTS
-    # prompt and is now waiting for the user's response — without
-    # this cue you have to watch the LED or guess when MA's audio
-    # stops.
+    # Audible "I'm listening now" chime — the SINGLE place the wake
+    # cue is played, for every path: wake-word cycles, multi-turn
+    # follow-ups, assist_satellite.announce(listen=true) and
+    # start_conversation.
     #
-    # Also fires for multi-turn follow-up listenings within a
-    # wake-word-initiated cycle (because the wake-word flag is
-    # cleared at on_tts_start — see the lambda there).
+    # Anchoring the chime here (instead of on_wake_word_detected) is
+    # what keeps a multi-satellite home from double-dinging: when two
+    # satellites hear the same wake word, both call
+    # voice_assistant.start, but HA rejects the race loser with
+    # duplicate_wake_up_detected — the loser never reaches
+    # on_listening, so only the satellite that is actually listening
+    # plays the cue.
     #
-    # Skipped for the INITIAL listening window of a wake-word cycle:
-    # on_wake_word_detected already played the chime up front, and
-    # the satellite waits external_speaker_wake_sound_delay /
-    # local_wake_sound_to_listen_delay before calling
-    # voice_assistant.start, so by the time on_listening fires the
-    # user has already heard the cue.
-    #
-    # Caveat: in announce / start_conversation flows the mic is
-    # already streaming when this chime plays (HA's voice_assistant
-    # component opens the mic on its own state transition; we can't
-    # delay that from the YAML side). With routing-on the chime
-    # routes through MA and gets emitted on the external speaker
-    # with MA's typical buffer latency — by the time it lands the
-    # mic is open. HA's pipeline VAD ignores the brief chime as
-    # non-speech noise so STT only kicks off when the user actually
-    # speaks. For routing-off the chime plays locally and XMOS AEC
-    # cancels it against the local pipeline reference.
+    # Caveat: the mic is already streaming when this chime plays
+    # (HA's voice_assistant component opens the mic on its own state
+    # transition; we can't delay that from the YAML side). With
+    # routing-on the chime routes through MA and gets emitted on the
+    # external speaker with MA's typical buffer latency — by the
+    # time it lands the mic is open. HA's pipeline VAD ignores the
+    # brief chime as non-speech noise so STT only kicks off when the
+    # user actually speaks. For routing-off the chime plays locally
+    # and XMOS AEC cancels it against the local pipeline reference.
     - if:
         condition:
-          and:
-            - lambda: 'return !id(wake_word_initiated_this_cycle);'
-            - switch.is_on: wake_sound
+          switch.is_on: wake_sound
         then:
           - script.execute:
               id: play_sound
@@ -359,13 +331,8 @@ voice_assistant:
     # forbidden).
     - lambda: |-
         id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;
-        // Clear the wake-word-initiated flag. Any on_listening AFTER
-        // this on_tts_start fires (multi-turn follow-up listening,
-        // or the announce/start_conversation listen-after-TTS flow)
-        // will see flag == false and play a chime as an audible
-        // "I'm listening now" cue. Same volume-capture gates as
-        // in on_wake_word_detected — see that comment for details.
-        id(wake_word_initiated_this_cycle) = false;
+        // Same volume-capture gates as in on_wake_word_detected —
+        // see that comment for details.
         if (id(duck_state) == 0
             && !id(external_player_currently_paused)
             && id(external_player_state_observer).state == "playing"

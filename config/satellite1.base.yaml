@@ -41,19 +41,14 @@ substitutions:
   # to suppress remote UI tones entirely while routing is on. Example:
   #   external_sound_base: "http://homeassistant.local:8123/local/sounds"
   external_sound_base: ""
-  # When routing is on, the satellite waits this long after kicking off the
-  # wake-sound mirror before starting voice_assistant. The default 1500ms
-  # covers a typical HA->MA->speaker pipeline; lower it if your MA setup is
-  # fast (snapcast-local) or raise it if you hear listening start before the
-  # chime lands on the external speaker.
-  external_speaker_wake_sound_delay: "1500ms"
-  # When routing is OFF (stock local speaker), how long to wait after
-  # starting the wake-chime before opening the mic. The local FLAC wake
-  # chime is ~500ms; add a 200ms buffer so listening starts after the
-  # chime audibly ends. Lower for snappier turnaround at the cost of the
-  # chime overlapping STT capture; raise if you swapped the chime for a
-  # longer file.
-  local_wake_sound_to_listen_delay: "700ms"
+  # NOTE: external_speaker_wake_sound_delay and local_wake_sound_to_listen_delay
+  # used to live here. They configured a pre-listen window in which the wake
+  # chime played BEFORE voice_assistant.start — removed because playing the
+  # chime before HA decides which satellite gets the pipeline made every
+  # satellite in earshot ding. The chime now plays at on_listening, which only
+  # fires on the satellite HA actually granted the pipeline to (the race
+  # loser's start is rejected with duplicate_wake_up_detected). Setting the
+  # old substitutions in a flash YAML is harmless but has no effect.
   # Fallback target volume used when user_target_volume hasn't yet been
   # captured (Duck mode falls back to this) or as the historical legacy
   # restore default. The Duck-mode runtime normally uses the live

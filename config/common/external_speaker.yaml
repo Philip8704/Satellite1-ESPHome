@@ -47,7 +47,11 @@ substitutions:
   # treats this magic value as "not set".
   external_assist_primary_media_player: "media_player.satellite1_unconfigured"
   external_sound_base: ""
-  external_speaker_wake_sound_delay: "1500ms"
+  # NOTE: external_speaker_wake_sound_delay used to live here. The wake chime
+  # no longer plays before voice_assistant.start (it moved to on_listening so
+  # only the satellite that wins the multi-satellite race chimes), so there is
+  # no pre-listen chime window to configure anymore. Setting the old
+  # substitution in a flash YAML is harmless but has no effect.
   # Safety net: if vad_end / on_end / on_error all somehow fail to fire
   # (HA crash during STT, lost API connection mid-listen, runaway
   # pipeline), this watchdog auto-recovers the external player so the
@@ -197,19 +201,6 @@ globals:
   # later on_end event. See media_player.yaml's on_announcement /
   # on_state for the producer side.
   - id: speaker_source_was_announcing
-    type: bool
-    restore_value: no
-    initial_value: 'false'
-  # True while a wake-word-initiated cycle is in its INITIAL listening
-  # window (between on_wake_word_detected and the first on_tts_start).
-  # Used by voice_assistant.yaml's on_listening to decide whether to
-  # play the wake chime as an audible "I'm listening" cue. Cleared at
-  # on_tts_start so any subsequent on_listening within the same cycle
-  # (multi-turn / follow-up listening after a response TTS) DOES get
-  # a chime — that's the same UX as assist_satellite.announce /
-  # start_conversation flows where the chime announces "MA finished
-  # speaking, now listen for the user's response."
-  - id: wake_word_initiated_this_cycle
     type: bool
     restore_value: no
     initial_value: 'false'
