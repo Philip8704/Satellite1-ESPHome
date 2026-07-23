@@ -47,10 +47,13 @@ substitutions:
   # treats this magic value as "not set".
   external_assist_primary_media_player: "media_player.satellite1_unconfigured"
   external_sound_base: ""
-  # NOTE: external_speaker_wake_sound_delay used to live here. The wake chime
-  # no longer plays before voice_assistant.start (it moved to on_listening so
-  # only the satellite that wins the multi-satellite race chimes), so there is
-  # no pre-listen chime window to configure anymore. Setting the old
+  # NOTE: external_speaker_wake_sound_delay used to live here and no longer
+  # exists. With routing ON the wake chime plays on the external speaker (MA)
+  # at on_listening — MA is off this satellite's i2s bus, so there is no
+  # pre-listen chime window to configure and only the race winner dings.
+  # (Routing OFF still uses a pre-start local chime + local_wake_sound_to_listen_delay,
+  # defined in satellite1.base.yaml, because the local speaker shares the mic's
+  # i2s bus and must finish before the mic opens.) Setting the removed
   # substitution in a flash YAML is harmless but has no effect.
   # Safety net: if vad_end / on_end / on_error all somehow fail to fire
   # (HA crash during STT, lost API connection mid-listen, runaway

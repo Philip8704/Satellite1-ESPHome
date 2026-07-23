@@ -133,20 +133,43 @@ micro_wake_word:
                             - media_player.stop:
                                 announcement: true
                                 id: external_media_player
-                          # Start the voice assistant immediately. The wake
-                          # chime deliberately does NOT play here — it plays
-                          # in on_listening instead, i.e. only once HA has
-                          # actually granted this satellite the pipeline.
-                          # With two satellites in earshot both detect the
-                          # wake word, but HA rejects the race loser's
-                          # voice_assistant.start with
-                          # duplicate_wake_up_detected, so the loser never
-                          # reaches on_listening and stays silent. Playing
-                          # the chime up-front (as this used to) made BOTH
-                          # satellites ding while only one listened.
-                          # Side benefit: no more pre-listen chime delay, so
-                          # wake-to-listen is ~1.5s faster with routing on.
                           else:
+                            # WAKE CHIME — two paths, mutually exclusive by
+                            # routing state, so a single cycle dings exactly
+                            # once (or not at all if wake_sound is off).
+                            #
+                            # ROUTING OFF: play the LOCAL chime here, BEFORE
+                            # voice_assistant.start, then wait for it to
+                            # finish. The mic and speaker share one i2s bus
+                            # on this board (i2s_mode: secondary, XMOS is
+                            # master); cold-starting the local speaker while
+                            # the mic is streaming corrupts the mic stream
+                            # and HA fails STT with stt-stream-failed. The
+                            # delay lets the speaker write-channel close
+                            # before the mic opens, so they never overlap.
+                            # This does reintroduce the race double-ding for
+                            # multi-satellite ROUTING-OFF homes, which is
+                            # unavoidable without an external speaker — but
+                            # the alternative (chime at on_listening) breaks
+                            # STT outright.
+                            #
+                            # ROUTING ON: nothing here. The chime plays on
+                            # the external speaker (MA) at on_listening — a
+                            # separate device that does NOT share the i2s
+                            # bus, so it cannot corrupt the mic stream, AND
+                            # only the race winner reaches on_listening, so
+                            # only it dings. See on_listening below.
+                            - if:
+                                condition:
+                                  and:
+                                    - lambda: 'return !id(external_speaker_routing_on);'
+                                    - switch.is_on: wake_sound
+                                then:
+                                  - script.execute:
+                                      id: play_sound
+                                      priority: true
+                                      sound_file: "wake_word_triggered_sound"
+                                  - delay: ${local_wake_sound_to_listen_delay}
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
 
@@ -218,35 +241,43 @@ voice_assistant:
   on_listening:
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
     - script.execute: control_leds
-    # Audible "I'm listening now" chime — the SINGLE place the wake
-    # cue is played, for every path: wake-word cycles, multi-turn
-    # follow-ups, assist_satellite.announce(listen=true) and
-    # start_conversation.
+    # Audible "I'm listening now" chime — ROUTING-ON path only.
     #
-    # Anchoring the chime here (instead of on_wake_word_detected) is
-    # what keeps a multi-satellite home from double-dinging: when two
-    # satellites hear the same wake word, both call
-    # voice_assistant.start, but HA rejects the race loser with
-    # duplicate_wake_up_detected — the loser never reaches
-    # on_listening, so only the satellite that is actually listening
-    # plays the cue.
+    # Sends the ding to the external speaker (MA) over the network via
+    # play_ui_sound_on_external. That is the ONLY safe channel while
+    # the mic is streaming: MA is a separate device, so its playback
+    # cannot touch this satellite's shared i2s bus and cannot corrupt
+    # the mic stream. Playing the chime LOCALLY here (as this used to)
+    # cold-started the local speaker mixer mid-mic-stream and made HA
+    # fail STT every single wake with stt-stream-failed.
     #
-    # Caveat: the mic is already streaming when this chime plays
-    # (HA's voice_assistant component opens the mic on its own state
-    # transition; we can't delay that from the YAML side). With
-    # routing-on the chime routes through MA and gets emitted on the
-    # external speaker with MA's typical buffer latency — by the
-    # time it lands the mic is open. HA's pipeline VAD ignores the
-    # brief chime as non-speech noise so STT only kicks off when the
-    # user actually speaks. For routing-off the chime plays locally
-    # and XMOS AEC cancels it against the local pipeline reference.
+    # Race handling is preserved: only the satellite HA grants the
+    # pipeline to reaches on_listening, so only it dings. The loser's
+    # voice_assistant.start is rejected with duplicate_wake_up_detected
+    # and it never gets here.
+    #
+    # Covers every routing-on path that reaches on_listening: wake-word
+    # cycles, multi-turn follow-ups, assist_satellite.announce(listen)
+    # and start_conversation.
+    #
+    # Requires ${external_sound_base} to be set (the URL base MA fetches
+    # the tone from). play_ui_sound_on_external is a clean no-op if it's
+    # empty — then the cue is LED-only. Music-underneath is unaffected:
+    # this is the same MA mirror the old play_sound already issued, so
+    # MA's announce/duck behaviour is unchanged; only the harmful local
+    # half is removed.
+    #
+    # ROUTING OFF: nothing here — the local chime already played
+    # pre-start in on_wake_word_detected. (announce/start_conversation
+    # under routing-off get LED-only, an accepted niche gap.)
     - if:
         condition:
-          switch.is_on: wake_sound
+          and:
+            - lambda: 'return id(external_speaker_routing_on);'
+            - switch.is_on: wake_sound
         then:
           - script.execute:
-              id: play_sound
-              priority: true
+              id: play_ui_sound_on_external
               sound_file: "wake_word_triggered_sound"
     # External routing: start the duck for the listening window.
     # The duck stays active through STT, processing, AND the response
