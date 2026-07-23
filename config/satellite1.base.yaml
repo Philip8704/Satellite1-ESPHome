@@ -8,6 +8,13 @@ substitutions:
 
   # Recommend leaving the following unchanged
   node_name: satellite1
+  # Per-device node name. The dashboard flow (satellite1.dashboard.yaml) and
+  # each device-specific flash YAML override ``name`` with the unique node name
+  # (e.g. satellite1-c41ef4) and bind it to esphome.name. The training capture
+  # forwards it to the trainer as X-Source-Device so each satellite is
+  # distinguishable. Defaults to ${node_name} so configs that don't set ``name``
+  # (satellite1.yaml, ld2410, ld2450) still resolve and build.
+  name: ${node_name}
   company_name: FutureProofHomes
   project_name: Satellite1
   component_name: Core

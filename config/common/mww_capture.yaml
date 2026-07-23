@@ -53,8 +53,10 @@ mww_training_capture:
   require_vad: true
   enabled_by_default: false
   upload_url: ${mww_capture_endpoint}
-  # Feeds the X-Source-Device header the trainer groups clips by.
-  device_name: ${node_name}
+  # Feeds the X-Source-Device header the trainer groups clips by. Bound to
+  # ${name} -- the per-device node name set in each device's flash YAML -- so
+  # every satellite reports a distinct source device to the trainer.
+  device_name: ${name}
   capture_wake_detected: ${mww_capture_wake_detected}
   capture_close_miss: ${mww_capture_close_miss}
   detection_cooldown_ms: ${mww_capture_detection_cooldown_ms}
