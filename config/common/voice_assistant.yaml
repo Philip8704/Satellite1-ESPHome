@@ -461,35 +461,44 @@ voice_assistant:
     # DURING the actual external-speaker TTS playback (sometimes
     # 5+ seconds before TTS is audibly done).
     #
-    # Fix: TWO wait_until's in sequence:
+    # Fix: TWO wait_until's in sequence, both gated on
+    # phase == REPLYING. By this point in on_end the phase-reset block
+    # above has already sent error / cancelled / routing-off cycles
+    # back to idle — so REPLYING here means exactly "routed cycle with
+    # a response TTS expected or in flight". Cycles with no TTS coming
+    # skip both waits entirely; before this gate the wait-for-TRUE
+    # burned its full 5s timeout on every such cycle, delaying the
+    # duck restore for nothing.
     #
     #   1) wait_until is_announcing == TRUE   (timeout: 5s)
-    #      Catches the local pipeline entering ANNOUNCING after
-    #      it finally starts buffered playback. For cycles that
-    #      never play TTS (user wake-worded but said nothing,
-    #      VA timed out, etc.), this times out at 5s — that's the
-    #      defensive-fallback path.
+    #      Catches the local pipeline entering ANNOUNCING after it
+    #      finally starts buffered playback (streaming URLs lag
+    #      on_end by ~700ms). The 5s timeout also covers the fast
+    #      non-streaming case where the announcement already ENDED
+    #      before on_end ran — there the on_state trigger in
+    #      media_player.yaml has already scheduled the wrapper, so
+    #      this path's lateness is a harmless no-op (mode: single).
     #
     #   2) wait_until is_announcing == FALSE  (timeout: 30s)
-    #      With #1 having gated us past the start of playback,
-    #      this now reliably waits for playback to actually finish.
+    #      With #1 having gated us past the start of playback, this
+    #      reliably waits for playback to actually finish.
     #
-    # After both waits, schedule the restore wrapper. The on_state
-    # trigger of speaker_source (in media_player.yaml) ALSO schedules
-    # restore_external_after_cycle when ANNOUNCING→IDLE happens —
-    # mode: single on the wrapper means whichever fires first wins
-    # and the other is a clean no-op. So this on_end path is the
-    # defensive fallback for no-TTS cycles, and the on_state trigger
-    # is the primary path for TTS cycles.
-    - wait_until:
+    # The on_state trigger of speaker_source (media_player.yaml) is
+    # the PRIMARY scheduler of restore_external_after_cycle for TTS
+    # cycles; this on_end path is the defensive fallback.
+    - if:
         condition:
-          media_player.is_announcing: external_media_player
-        timeout: 5s
-    - wait_until:
-        condition:
-          not:
-            media_player.is_announcing: external_media_player
-        timeout: 30s
+          lambda: 'return id(voice_assistant_phase) == ${voice_assist_replying_phase_id};'
+        then:
+          - wait_until:
+              condition:
+                media_player.is_announcing: external_media_player
+              timeout: 5s
+          - wait_until:
+              condition:
+                not:
+                  media_player.is_announcing: external_media_player
+              timeout: 30s
     # Schedule the duck/pause restore + (when routing on) the phase
     # reset, after the configured post-response tail.
     #

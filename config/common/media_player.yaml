@@ -132,23 +132,39 @@ media_player:
                 id: media_mixing_input
                 decibel_reduction: 0
                 duration: 1.0s
-      # External-player restore anchor: when the local speaker_source
-      # leaves the ANNOUNCING state (chime or TTS just finished
-      # locally), if an external-player duck/pause is still
-      # outstanding, schedule the restore through
-      # restore_external_after_cycle (which adds the +300ms tail to
-      # cover MA's network/buffer drain). The was_announcing flag
-      # ensures we trigger exactly once per ANNOUNCING -> ! ANNOUNCING
+      # External-player restore + LED-release anchor: when the local
+      # speaker_source leaves the ANNOUNCING state, schedule
+      # restore_external_after_cycle. The was_announcing flag ensures
+      # we trigger exactly once per ANNOUNCING -> !ANNOUNCING
       # transition — not for unrelated state changes (mute toggle,
       # volume change, etc.) that also fire on_state.
       #
-      # Multi-turn safety: if a new conversation turn fires
-      # on_listening / on_tts_start before the +300ms tail elapses,
-      # the duck dispatcher's `script.stop: restore_external_after_cycle`
-      # cancels the pending restore — the existing duck stays in effect
-      # without flapping. restore_external_after_cycle is mode: single,
-      # so this on_state trigger and the on_end fallback can both
-      # fire safely; only the FIRST one schedules the restore.
+      # Gated on phase == REPLYING, NOT on duck/pause state, for two
+      # hard-learned reasons:
+      #
+      #   * The wake chime ALSO produces an ANNOUNCING -> IDLE edge, at
+      #     the START of listening. Gating on duck_state let that edge
+      #     schedule the wrapper mid-cycle — with the MA-state wait now
+      #     skipped while ducked, the restore fired ~1.5s into STT and
+      #     un-ducked the music while the user was still speaking.
+      #     During the chime the phase is WAITING/LISTENING, never
+      #     REPLYING, so the phase gate ignores it structurally.
+      #
+      #   * No-music cycles have nothing ducked/paused, so the old gate
+      #     never scheduled this anchor at all — leaving on_end's
+      #     fallback path, whose wait-for-ANNOUNCING burned its full 5s
+      #     timeout when the TTS had already finished. Net effect: the
+      #     LED sat in REPLYING ~7s past the audible end of every
+      #     no-music response. The wrapper's actions all self-gate
+      #     (restore no-ops with nothing outstanding), so scheduling it
+      #     for every routed response is free and gives those cycles
+      #     the same tight LED release.
+      #
+      # Multi-turn safety unchanged: a new turn's on_listening /
+      # on_tts_start runs the duck dispatcher's
+      # `script.stop: restore_external_after_cycle`, cancelling a
+      # pending wrapper. mode: single means this trigger and the
+      # on_end fallback can both fire; the first one wins.
       - if:
           condition:
             and:
@@ -159,9 +175,9 @@ media_player:
             - lambda: 'id(speaker_source_was_announcing) = false;'
             - if:
                 condition:
-                  or:
-                    - lambda: 'return id(duck_state) == 1;'
-                    - lambda: 'return id(external_player_currently_paused);'
+                  and:
+                    - lambda: 'return id(external_speaker_routing_on);'
+                    - lambda: 'return id(voice_assistant_phase) == ${voice_assist_replying_phase_id};'
                 then:
                   - logger.log: "Local speaker_source finished announcing — scheduling external player restore"
                   - script.execute: restore_external_after_cycle
