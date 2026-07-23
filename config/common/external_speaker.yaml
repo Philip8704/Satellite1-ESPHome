@@ -610,26 +610,39 @@ script:
       #   T+5700  MA's text_sensor finally goes 'idle' (TTS actually
       #           done on the external speaker)
       #
-      # Previously this was gated on state_at_cycle_start != "playing"
-      # to skip the wait for the "music underneath" case. But that gate
-      # is unreliable — text_sensor often holds a stale 'playing' from
-      # a previous cycle's TTS announce that wasn't promptly pushed
-      # back to 'idle'. So we ALWAYS wait_until now. For genuine
-      # music-underneath cycles MA's state never leaves 'playing'
-      # and we hit the timeout instead — restore fires at the timeout.
+      # The wait is SKIPPED when a duck is outstanding (duck_state == 1).
+      # A duck only ever happens when music was verified playing at
+      # cycle start — and with music underneath, MA's state stays
+      # 'playing' for the music itself, so this wait can never succeed
+      # and would burn its full timeout on every cycle. That was a real
+      # bug: with music on, every response held REPLYING + the duck for
+      # ~17 s (1.5 s delay + 15 s dead wait + settle) regardless of how
+      # short the TTS actually was. With a duck outstanding, the fixed
+      # ${external_speaker_post_response_unduck_delay} above is the
+      # whole tail — tune it to your MA latency (~1800 ms measured on
+      # this LAN).
       #
-      # 15s timeout balances "long enough to catch slow MA pipelines"
-      # against "not blocking forever on a music-underneath cycle".
-      # After 15s we restore anyway — better to land at user_target
-      # than leave the music ducked indefinitely.
-      - wait_until:
+      # duck_state is OUR own state machine, not an HA sensor, so this
+      # gate cannot go stale the way the old state_at_cycle_start gate
+      # did (a leftover 'playing' from a previous cycle's announce).
+      #
+      # When no duck is outstanding (nothing playing underneath, or
+      # Pause mode where the music is paused), MA's state genuinely
+      # tracks the TTS announce (playing -> idle), so the wait is the
+      # correct anchor and stays. 15s timeout is the safety net; after
+      # it we restore anyway.
+      - if:
           condition:
-            lambda: 'return id(external_player_state_observer).state != std::string("playing");'
-          timeout: 15s
-      # Small settle past MA going idle — the state push from HA has
-      # some latency, and the actual audio tail may have a few ms
-      # past the state change.
-      - delay: 300ms
+            lambda: 'return id(duck_state) == 0;'
+          then:
+            - wait_until:
+                condition:
+                  lambda: 'return id(external_player_state_observer).state != std::string("playing");'
+                timeout: 15s
+            # Small settle past MA going idle — the state push from HA
+            # has some latency, and the actual audio tail may have a
+            # few ms past the state change.
+            - delay: 300ms
       - script.execute: restore_external_after_listening
       # Coordinated LED phase reset. The local pipeline finishes the
       # (silent) TTS decode well before MA's external speaker actually
