@@ -11,7 +11,17 @@ external_components:
       type: git
       url: ${ext_comp_repo_url}
       ref: ${ext_comp_repo_ref}
-    refresh: 1s
+    # refresh controls how often ESPHome re-fetches the component tree from
+    # GitHub. It was 1s -- which re-clones on EVERY build and, under heavy
+    # reflashing, trips GitHub's anonymous git rate limit; a rate-limited fetch
+    # then leaves the tree empty and every vendored component ("micro_wake_word
+    # is an invalid option for [<root>]" etc.) fails to register. 1d matches
+    # ESPHome's default: the cached clone is reused between builds, so a
+    # rate-limit or transient network blip can't wipe the components mid-build.
+    # After pushing a change to a vendored component, run "Clean Build Files"
+    # ONCE to force the pull. For fully reproducible builds, pin
+    # ext_comp_repo_ref to a commit SHA in the flash YAML instead of a branch.
+    refresh: 1d
     components:
       # Mirror the local list in satellite1.yaml. sendspin is intentionally
       # absent — provided by kahrendt's ESPHome PR via common/sendspin.yaml.
