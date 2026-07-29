@@ -48,18 +48,10 @@ substitutions:
   # to suppress remote UI tones entirely while routing is on. Example:
   #   external_sound_base: "http://homeassistant.local:8123/local/sounds"
   external_sound_base: ""
-  # NOTE: external_speaker_wake_sound_delay is gone. With routing ON the wake
-  # chime plays on the external speaker (MA) at on_listening — MA is off the
-  # satellite's i2s bus, so there is no pre-listen window to configure and
-  # only the race winner dings. Setting it in a flash YAML has no effect.
-  #
-  # local_wake_sound_to_listen_delay (below) is STILL USED, for routing OFF
-  # only: there the chime must play on the local speaker BEFORE the mic opens,
-  # because mic and speaker share one i2s bus and a local speaker cold-start
-  # during the mic stream corrupts STT (stt-stream-failed). This delay lets
-  # the local chime's speaker channel close before voice_assistant.start opens
-  # the mic. Must be >= the wake tone's length (~500ms) plus a small buffer.
-  local_wake_sound_to_listen_delay: "700ms"
+  # With routing ON, the wake chime is sent immediately at on_listening so
+  # listening remains as responsive as possible and only the pipeline winner
+  # chimes. Routing OFF retains the FutureProofHomes factory flow: local chime,
+  # fixed 300ms delay, then voice_assistant.start.
   # Fallback target volume used when user_target_volume hasn't yet been
   # captured (Duck mode falls back to this) or as the historical legacy
   # restore default. The Duck-mode runtime normally uses the live
