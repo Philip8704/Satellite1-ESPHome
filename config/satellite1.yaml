@@ -49,7 +49,6 @@ packages:
 
   home-assistant-voice: !include satellite1.base.yaml
   sendspin: !include common/sendspin.yaml
-  enrollment_mode: !include common/enrollment_mode.yaml
 
 esphome:
   project:
