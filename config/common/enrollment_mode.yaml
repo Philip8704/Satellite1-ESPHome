@@ -70,3 +70,29 @@ voice_assistant:
           lambda: return id(enrollment_mode_active);
         then:
           - delay: 3s
+
+# ---------------------------------------------------------------------------
+# Remote control of the switch above.
+# ---------------------------------------------------------------------------
+# The trainer UI drives enrolment, so it has to be able to flip this switch. The
+# satellite already talks *outbound* to the trainer (mww_training_capture posts
+# clips to it), but nothing can reach *in*, and the trainer holds no Home
+# Assistant credentials. ESPHome's web server gives a small REST surface for
+# exactly this:
+#
+#   POST http://<satellite>/switch/enrolment_mode/turn_on
+#   POST http://<satellite>/switch/enrolment_mode/turn_off
+#
+# The trainer proxies those calls server-side, so no browser hits the device
+# directly and there is no cross-origin problem.
+#
+# Note this is an unauthenticated control endpoint on the LAN: anything that can
+# reach the satellite can toggle its exposed entities. `auth:` below takes a
+# username/password if that is not acceptable on your network.
+web_server:
+  port: 80
+  version: 3
+  local: true   # serve assets from the device, never a CDN
+  # auth:
+  #   username: !secret satellite_web_user
+  #   password: !secret satellite_web_password
