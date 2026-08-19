@@ -48,6 +48,7 @@ packages:
                 - memory_flasher.write_embedded_image:
 
   home-assistant-voice: !include satellite1.base.yaml
+  enrollment_mode: !include common/enrollment_mode.yaml
 
 esphome:
   project:

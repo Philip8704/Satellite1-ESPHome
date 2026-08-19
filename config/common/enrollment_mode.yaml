@@ -1,0 +1,72 @@
+# =============================================================================
+# Enrolment mode
+# =============================================================================
+# Speaker profiles built from a phone recording score far lower than the same
+# voice heard across a room: measured on this estate, a phone take scored 0.777
+# and 0.804 while real turns through the satellite peaked at 0.629, so every turn
+# came back "Unknown". The fix is to enrol from the microphone that will actually
+# be scored - this one.
+#
+# Reading a three minute script one wake word at a time is miserable, so this
+# switch keeps the pipeline listening: each utterance runs through Assist exactly
+# as normal, and the voice stack's speech-to-text captures it on the way past.
+# Nothing here changes how the satellite behaves when the switch is off.
+#
+# Written as a package because this repo already extends voice_assistant through
+# inline packages (see the note above `packages:` in satellite1.yaml): ESPHome
+# appends trigger lists from packages onto the base config, so on_end below joins
+# the existing on_end rather than replacing it.
+
+globals:
+  - id: enrollment_mode_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+switch:
+  - platform: template
+    name: Enrolment Mode
+    id: enrollment_mode
+    icon: mdi:account-voice
+    optimistic: true
+    entity_category: config
+    # Deliberately not restored: a satellite that reboots mid-enrolment should
+    # come back as a normal voice satellite, not one that listens continuously.
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - lambda: id(enrollment_mode_active) = true;
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - voice_assistant.start:
+    on_turn_off:
+      - lambda: id(enrollment_mode_active) = false;
+
+voice_assistant:
+  on_end:
+    # Re-arm for the next line of the script. The delay lets the pipeline settle
+    # and, just as importantly, stops a failing pipeline from spinning here.
+    - if:
+        condition:
+          lambda: return id(enrollment_mode_active);
+        then:
+          - delay: 500ms
+          - if:
+              condition:
+                and:
+                  - lambda: return id(enrollment_mode_active);
+                  - not:
+                      voice_assistant.is_running:
+              then:
+                - voice_assistant.start:
+
+  on_error:
+    # An error would otherwise be followed straight back into on_end and restart
+    # immediately; back off further so a broken pipeline cannot hammer the server.
+    - if:
+        condition:
+          lambda: return id(enrollment_mode_active);
+        then:
+          - delay: 3s
