@@ -91,6 +91,12 @@ substitutions:
   # hearing the response. Measure yours: the log prints "Local speaker_source
   # finished announcing" and MA's state goes 'idle' when it actually stops.
   external_speaker_post_response_unduck_delay: "1500ms"
+  # Maximum wait for a routed external announcement to report `playing`.
+  # The restore waits for that start edge before waiting for playback to end,
+  # so an initially-idle player is not restored while delayed TTS is starting.
+  # Players that expose no announcement state use this as a conservative
+  # fallback delay before the exact pre-conversation volume is restored.
+  external_speaker_announce_start_timeout: "8s"
   # MA re-asserts its own remembered volume 1-2 s after an announce ends,
   # which stomps our restore. These re-issue the volume_set repeatedly to win
   # that race — 6 shots x 500 ms = a 3 s guard window past the restore.

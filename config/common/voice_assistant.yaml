@@ -50,60 +50,10 @@ micro_wake_word:
     gain_factor: 6
   stop_after_detection: false
   on_wake_word_detected:
-    # *** First actions on activation — run BEFORE the wake chime is
-    # mirrored to MA. ***
-    #
-    # 1) Snapshot the external media_player's state AND volume_level.
-    #    play_sound (a few lines down) mirrors the wake chime to MA
-    #    via media_player.play_media with announce: true, which:
-    #     - flips MA's reported state to 'playing' for the duration
-    #       of the announcement (corrupts the state gate)
-    #     - bumps volume_level to MA's announce_volume (corrupts
-    #       the duck baseline)
-    #
-    #    The snapshot is the pre-cycle truth. Volume is captured
-    #    fresh every cycle (replaces the old buggy auto-recapture
-    #    that sampled MA's announce-restore transients) — gated so
-    #    we only update user_target_volume when (a) MA is actually
-    #    playing music and (b) volume is reasonable (>= 0.05).
-    #    Otherwise the previously-captured value persists.
-    - lambda: |-
-        id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;
-        // NOTE: no chime is played here anymore. The wake chime moved to
-        // on_listening so that when two satellites hear the same wake word,
-        // only the one HA grants the pipeline to actually chimes — the race
-        // loser's voice_assistant.start is rejected with
-        // duplicate_wake_up_detected and never reaches on_listening.
-        // Per-cycle volume capture. Gates:
-        //   - We're NOT already in a duck or pause cycle. Without
-        //     this, a follow-up wake word during the 300ms restore
-        //     tail of the previous cycle would re-capture from
-        //     whatever volume the player is at right now (which
-        //     might be our ducked value, or MA's announce-restore
-        //     transient).
-        //   - Music actively playing (sensor state == "playing").
-        //   - Sensor not NaN.
-        //   - Volume >= 0.05 (rejects MA's pathological
-        //     announce-restore artifacts — we observed 0.00, 0.01,
-        //     0.08 right after MA announce events that aren't real
-        //     user-set volumes).
-        // If any gate fails, user_target_volume keeps its previous
-        // value (restore_value: yes persists it across reboots).
-        if (id(duck_state) == 0
-            && !id(external_player_currently_paused)
-            && id(external_player_state_observer).state == "playing"
-            && !std::isnan(id(external_player_volume_level_observer).state)
-            && id(external_player_volume_level_observer).state >= 0.05f) {
-          float v = id(external_player_volume_level_observer).state;
-          if (v > 1.0f) v = 1.0f;
-          id(user_target_volume) = v;
-          id(user_target_volume_valid) = true;
-        }
-    # Legacy no-op capture (kept so this trigger compiles with the
-    # historical capture_volume_for_cycle script that other callers
-    # still reference). The actual user_target_volume capture is
-    # now the lambda above.
-    - script.execute: capture_volume_for_cycle
+    # Volume capture intentionally waits for on_start/on_listening. That way a
+    # second satellite which hears the wake word but loses HA's pipeline race
+    # cannot create a stale conversation snapshot. No chime is played here;
+    # the routing-on chime also waits for on_listening, so only the winner acts.
     # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
     - if:
         condition:
@@ -220,15 +170,14 @@ voice_assistant:
     - script.execute: restore_external_after_listening
     - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
 
-  # When the voice assistant starts: capture the external player's
-  # current volume FIRST (before TTS plays / before MA bumps it for
-  # an announce), then duck local audio, then clear cycle flags.
+  # When the voice assistant starts: capture the external player's current
+  # volume before TTS/MA can bump it. This also covers direct pipeline starts
+  # and is the first capture point for an accepted wake-word pipeline.
   on_start:
     # *** Strictly the first action on activation ***: capture the
     # external player's volume before anything else can perturb it.
-    # capture_volume_for_cycle is single-shot per cycle (guarded by
-    # external_player_volume_captured_this_cycle) so subsequent capture
-    # calls from on_wake_word_detected / on_tts_start are no-ops.
+    # capture_volume_for_cycle is single-shot for the complete conversation,
+    # so subsequent calls from on_tts_start/follow-up turns are no-ops.
     - script.execute: capture_volume_for_cycle
     - mixer_speaker.apply_ducking:
         id: media_mixing_input
@@ -239,6 +188,10 @@ voice_assistant:
     # streaming, tts_end for everything else) gets to mirror exactly once.
     - lambda: 'id(external_tts_mirrored_this_cycle) = false;'
   on_listening:
+    # First winning-pipeline action. Usually on_start already captured this;
+    # the helper is an immediate no-op then. It is also the fallback for a
+    # direct listen path that did not fire on_start or an initial TTS event.
+    - script.execute: capture_volume_for_cycle
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
     - script.execute: control_leds
     # Audible "I'm listening now" chime — ROUTING-ON path only.
@@ -282,7 +235,7 @@ voice_assistant:
     # External routing: start the duck for the listening window.
     # The duck stays active through STT, processing, AND the response
     # TTS playback — restore is delayed until on_end + the configured
-    # post-response tail (default 300ms). This avoids restoring the
+    # post-response tail (default 1500ms). This avoids restoring the
     # volume DURING TTS playback, which would collide with MA's
     # announce-volume bump for the TTS and produce inconsistent volume.
     - script.execute: duck_external_for_listening
@@ -324,7 +277,7 @@ voice_assistant:
               url: !lambda 'return x;'
           - lambda: 'id(external_tts_mirrored_this_cycle) = true;'
   on_tts_start:
-    # *** First action: snapshot state AND volume *** before
+    # *** First action: capture state and volume *** before
     # on_intent_progress / on_tts_end mirror the TTS URL to MA
     # (which would flip MA's state to 'playing' AND bump volume_level
     # to MA's announce_volume, corrupting both the state gate and the
@@ -332,54 +285,16 @@ voice_assistant:
     # start_conversation paths this trigger is the earliest point
     # where the satellite knows a new cycle is starting (no
     # on_wake_word_detected, no on_start). Snapshotting here covers
-    # those paths the same way on_wake_word_detected covers the
+    # those paths the same way on_start covers the accepted
     # wake-word path.
     #
-    # For the standard assist flow (wake-word) the wake-word capture
-    # has already happened earlier in the cycle — re-capturing here
-    # is fine because we're still BEFORE the response TTS mirror,
-    # so the value remains correct.
+    # For the standard assist flow on_start already captured the volume. For
+    # announce/start_conversation this is the first capture. For a
+    # follow-up response the conversation snapshot is still valid, so this
+    # call cannot replace it with the temporary announce volume.
     #
-    # Same volume-capture gates as in on_wake_word_detected. The
-    # extra (duck_state == 0 && !currently_paused) guard is
-    # ESPECIALLY important here because on_tts_start fires in two
-    # very different situations:
-    #
-    #   1) Standard wake-word flow: on_tts_start for the RESPONSE
-    #      TTS fires LATE in the cycle, after on_listening has
-    #      already ducked. MA's announce-handling has bumped
-    #      volume_level to announce_volume by this point. Without
-    #      the duck_state gate we would capture announce_volume as
-    #      the new user_target — drifting the baseline louder than
-    #      the user had it.
-    #
-    #   2) assist_satellite.announce / start_conversation: on_tts_start
-    #      for the FIRST announce fires before any duck. duck_state
-    #      is 0, gate passes, capture the genuine pre-cycle volume.
-    #
-    # So the gate cleanly separates "first entry into a cycle"
-    # (capture allowed) from "re-triggered mid-cycle" (capture
-    # forbidden).
-    - lambda: |-
-        id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;
-        // Same volume-capture gates as in on_wake_word_detected —
-        // see that comment for details.
-        if (id(duck_state) == 0
-            && !id(external_player_currently_paused)
-            && id(external_player_state_observer).state == "playing"
-            && !std::isnan(id(external_player_volume_level_observer).state)
-            && id(external_player_volume_level_observer).state >= 0.05f) {
-          float v = id(external_player_volume_level_observer).state;
-          if (v > 1.0f) v = 1.0f;
-          id(user_target_volume) = v;
-          id(user_target_volume_valid) = true;
-        }
-    # Belt-and-suspenders capture for the assist_satellite.announce /
-    # start_conversation flow, which does NOT fire on_start (no RUN_START
-    # event) — on_tts_start with the spoken text is the earliest trigger
-    # in that path. capture_volume_for_cycle is a no-op now (legacy
-    # entry kept so old callers compile); the actual user_target_volume
-    # snapshot lives in external_speaker.yaml.
+    # Critical for assist_satellite.announce/start_conversation, which do not
+    # fire on_start. The helper itself protects multi-turn continuity.
     - script.execute: capture_volume_for_cycle
     # Idempotent duck — covers assist_satellite.announce paths where
     # TTS plays BEFORE any on_listening fires (announce-only, or

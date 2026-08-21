@@ -7,8 +7,9 @@
 #     mute bit on whichever DAC is active. See apply_external_speaker_routing.
 #   - TTS URLs are mirrored to ${external_assist_primary_media_player} as
 #     announcements via media_player.play_media with announce: true. MA's
-#     own announcement system handles announce-volume bump/restore — we
-#     do not compete with it.
+#     own announcement system handles the temporary announce-volume bump.
+#     We snapshot the pre-conversation volume before the first announce and
+#     defensively restore that exact value after the final response.
 #   - UI tones (wake / jack / mute / timer / button / factory-reset) are
 #     mirrored to the same entity by fetching ${external_sound_base}/<file>.
 #
@@ -24,7 +25,8 @@
 #     during STT. Refined UX. Requires capturing the user's intended
 #     volume into user_target_volume — which is done from explicit safe
 #     moments only (routing-switch on, manual "Sync Music Volume" button,
-#     auto-recapture 3s after each cycle completes), NEVER mid-cycle.
+#     and a safe pre-conversation capture while music is playing), NEVER
+#     from an active announcement.
 #     Eliminates the volume-drift race that defeated naive volume-based
 #     ducking earlier.
 #
@@ -93,6 +95,13 @@ substitutions:
   # LED goes idle while external speaker still talks AND volume
   # restore lands while MA is still managing the announce.
   external_speaker_post_response_unduck_delay: "1500ms"
+  # When no music duck is active, wait for MA's external player to enter
+  # `playing` before waiting for it to leave `playing`. This prevents the
+  # old `state != playing` check from succeeding immediately while the
+  # delayed external TTS has not started yet. Some players do not expose an
+  # announcement state transition; this timeout is their conservative
+  # fallback and keeps the restore away from short/normal TTS playback.
+  external_speaker_announce_start_timeout: "8s"
   # Multi-shot defensive volume corrector. After the primary restore
   # fires, the wrapper re-issues volume_set every
   # external_speaker_late_restore_interval for
@@ -151,10 +160,32 @@ globals:
     type: uint32_t
     restore_value: no
     initial_value: '0'
+  # Exact volume observed before the first external announcement in a
+  # conversation. This is deliberately separate from user_target_volume:
+  # the latter is a persisted music-duck preference and can be stale, while
+  # this value is a volatile restore point for the current wake/announce/
+  # start_conversation flow. It remains valid across multi-turn follow-ups
+  # and is cleared only after the final restore guard completes.
+  - id: external_player_conversation_volume
+    type: float
+    restore_value: no
+    initial_value: '0.5'
+  - id: external_player_conversation_volume_valid
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # Generation captured when restore_external_after_cycle starts. A new
+  # listening/TTS turn increments duck_cycle_id, invalidating any delayed
+  # restore work from the previous turn even if script cancellation races
+  # an already-running action.
+  - id: external_player_restore_cycle_id
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
   # The user's intended music volume on the external player. Captured
   # ONLY from explicit safe moments (routing-switch on, manual sync,
-  # mode-change to Duck, auto-recapture after a complete cycle with a
-  # settle delay). NEVER read inside a duck cycle — that was the race
+  # mode-change to Duck, or pre-conversation while music is genuinely
+  # playing). NEVER read inside a duck cycle — that was the race
   # that defeated the earlier volume-based implementation. Persisted
   # across reboots so a power-cycled satellite doesn't need a fresh
   # capture before the first duck works.
@@ -407,8 +438,9 @@ script:
   # Mirrors a URL to the configured external media_player as an
   # announcement. Used by the TTS URL mirror (voice_assistant.yaml's
   # on_intent_progress / on_tts_end) and by play_ui_sound_on_external.
-  # MA's own announcement system handles announce-volume bump/restore —
-  # we just hand it the URL.
+  # MA handles the temporary announce-volume bump. The conversation-scoped
+  # restore guard below corrects MA if its delayed restore does not return to
+  # the exact pre-announcement volume.
   - id: play_on_external
     mode: queued
     parameters:
@@ -584,21 +616,23 @@ script:
   # new on_listening / on_tts_start.
   #
   # The configured delay (external_speaker_post_response_unduck_delay,
-  # default 300ms) covers the network/buffer drain between when the
+  # default 1500ms) covers the network/buffer drain between when the
   # local pipeline considers the TTS done and when MA's actual
   # external speaker stops emitting it. Raise for slow/remote MA
   # setups.
   - id: restore_external_after_cycle
     mode: single
     then:
+      - lambda: 'id(external_player_restore_cycle_id) = id(duck_cycle_id);'
       # MINIMUM wait past local speaker_source IDLE before we even
       # think about restoring. The local pipeline considers itself
       # "done" when its silent decode completes, but MA's external
       # speaker pipeline has its own buffer + start-up latency and
       # may not have STARTED emitting yet at this point.
       - delay: ${external_speaker_post_response_unduck_delay}
-      # PRIMARY anchor for "MA is actually done": wait_until MA's
-      # text_sensor transitions out of 'playing'. This is the only
+      # PRIMARY anchor for "MA is actually done": first wait for MA's
+      # text_sensor to transition into 'playing', then wait for it to
+      # transition out of 'playing'. This is the only
       # signal we have that ground-truths what the user is hearing
       # on the external speaker. Without it, MA can be 4-6 seconds
       # behind local IDLE — log evidence:
@@ -626,22 +660,38 @@ script:
       #
       # When no duck is outstanding (nothing playing underneath, or
       # Pause mode where the music is paused), MA's state genuinely
-      # tracks the TTS announce (playing -> idle), so the wait is the
-      # correct anchor and stays. 15s timeout is the safety net; after
-      # it we restore anyway.
+      # tracks the TTS announce (playing -> idle). Waiting for BOTH edges
+      # matters: the previous single `state != playing` check returned
+      # immediately when MA was still idle but had not started the delayed
+      # external TTS yet. Players that never publish the start edge use the
+      # conservative start timeout before restore proceeds.
       - if:
           condition:
-            lambda: 'return id(duck_state) == 0;'
+            and:
+              - lambda: 'return id(duck_state) == 0;'
+              - lambda: 'return id(voice_assistant_phase) == ${voice_assist_replying_phase_id};'
           then:
             - wait_until:
                 condition:
-                  lambda: 'return id(external_player_state_observer).state != std::string("playing");'
-                timeout: 15s
+                  lambda: 'return id(external_player_state_observer).state == std::string("playing");'
+                timeout: ${external_speaker_announce_start_timeout}
+            - if:
+                condition:
+                  lambda: 'return id(external_player_state_observer).state == std::string("playing");'
+                then:
+                  - wait_until:
+                      condition:
+                        lambda: 'return id(external_player_state_observer).state != std::string("playing");'
+                      timeout: 30s
             # Small settle past MA going idle — the state push from HA
             # has some latency, and the actual audio tail may have a
             # few ms past the state change.
             - delay: 300ms
-      - script.execute: restore_external_after_listening
+      - if:
+          condition:
+            lambda: 'return id(external_player_restore_cycle_id) == id(duck_cycle_id);'
+          then:
+            - script.execute: restore_external_after_listening
       # Coordinated LED phase reset. The local pipeline finishes the
       # (silent) TTS decode well before MA's external speaker actually
       # starts/finishes emitting the audio — so resetting
@@ -696,7 +746,8 @@ script:
                   and:
                     - lambda: 'return id(external_speaker_routing_on);'
                     - binary_sensor.is_on: external_speaker_configured
-                    - lambda: 'return id(user_target_volume_valid);'
+                    - lambda: 'return id(external_player_conversation_volume_valid);'
+                    - lambda: 'return id(external_player_restore_cycle_id) == id(duck_cycle_id);'
                 then:
                   - homeassistant.action:
                       action: media_player.volume_set
@@ -706,12 +757,20 @@ script:
                         volume_level: "{{ target }}"
                       variables:
                         target: !lambda |-
-                          float v = id(user_target_volume);
+                          float v = id(external_player_conversation_volume);
                           if (v < 0.0f) v = 0.0f;
                           if (v > 1.0f) v = 1.0f;
                           return v;
                       on_error:
                         - lambda: 'id(external_player_action_error_count)++;'
+      # A follow-up turn stops this wrapper before reaching here, preserving
+      # the original snapshot. Reaching here means the final guard finished,
+      # so the next independent conversation must capture a fresh volume.
+      - if:
+          condition:
+            lambda: 'return id(external_player_restore_cycle_id) == id(duck_cycle_id);'
+          then:
+            - lambda: 'id(external_player_conversation_volume_valid) = false;'
 
   # ---------------------------------------------------------------------
   # Pause-mode primitives
@@ -733,7 +792,7 @@ script:
               # the live sensor here would false-trigger pause on the
               # chime/TTS-induced state change — which is exactly the
               # bug we're fixing. Snapshot is taken in
-              # voice_assistant.yaml's on_wake_word_detected and
+              # voice_assistant.yaml's on_start/on_listening and
               # on_tts_start, BEFORE any of our HA actions perturb MA.
               # Since currently_paused only flips to true when we
               # actually paused, _resume self-no-ops the corresponding
@@ -807,7 +866,7 @@ script:
               # of this cycle, before our wake-chime/TTS announce
               # bumped MA into 'playing' state of its own accord.
               # Using the live sensor would false-trigger duck on
-              # the announce. Snapshot is taken at on_wake_word_detected
+              # the announce. Snapshot is taken at on_start/on_listening
               # and on_tts_start, before our mirror calls fire.
               - lambda: 'return id(external_player_state_at_cycle_start) == "playing";'
           then:
@@ -848,9 +907,11 @@ script:
                   volume_level: "{{ target }}"
                 variables:
                   target: !lambda |-
-                    float base = id(user_target_volume_valid)
-                                   ? id(user_target_volume)
-                                   : (float) atof("${external_speaker_restore_volume}");
+                    float base = id(external_player_conversation_volume_valid)
+                                   ? id(external_player_conversation_volume)
+                                   : (id(user_target_volume_valid)
+                                        ? id(user_target_volume)
+                                        : (float) atof("${external_speaker_restore_volume}"));
                     float factor = (float) atof("${external_speaker_duck_factor}");
                     float v = base * factor;
                     if (v < 0.0f) v = 0.0f;
@@ -865,7 +926,7 @@ script:
             - logger.log:
                 format: "Ducked external player to %.3f * %s (cycle %u)"
                 args:
-                  - 'id(user_target_volume_valid) ? id(user_target_volume) : (float) atof("${external_speaker_restore_volume}")'
+                  - 'id(external_player_conversation_volume_valid) ? id(external_player_conversation_volume) : (id(user_target_volume_valid) ? id(user_target_volume) : (float) atof("${external_speaker_restore_volume}"))'
                   - '"${external_speaker_duck_factor}"'
                   - 'id(duck_cycle_id)'
             - script.execute: external_duck_watchdog
@@ -899,9 +960,11 @@ script:
                   volume_level: "{{ target }}"
                 variables:
                   target: !lambda |-
-                    float v = id(user_target_volume_valid)
-                                ? id(user_target_volume)
-                                : (float) atof("${external_speaker_restore_volume}");
+                    float v = id(external_player_conversation_volume_valid)
+                                ? id(external_player_conversation_volume)
+                                : (id(user_target_volume_valid)
+                                     ? id(user_target_volume)
+                                     : (float) atof("${external_speaker_restore_volume}"));
                     if (v < 0.0f) v = 0.0f;
                     if (v > 1.0f) v = 1.0f;
                     return v;
@@ -914,15 +977,15 @@ script:
             - logger.log:
                 format: "Restored external player to %.3f"
                 args:
-                  - 'id(user_target_volume_valid) ? id(user_target_volume) : (float) atof("${external_speaker_restore_volume}")'
+                  - 'id(external_player_conversation_volume_valid) ? id(external_player_conversation_volume) : (id(user_target_volume_valid) ? id(user_target_volume) : (float) atof("${external_speaker_restore_volume}"))'
             # NOTE: Auto-recapture used to be triggered here (3s after
             # restore). It was removed because MA's announce-restore
             # cascade produces volume transients (0.08, 0.30, 0.01, ...)
             # that the auto-recapture sampled at random moments, feeding
             # wrong values into user_target_volume. Across long
             # conversations the drift compounded into silence
-            # (0.370 -> 0.080 -> 0.010 -> 0.000). Per-cycle capture at
-            # on_wake_word_detected / on_tts_start (in
+            # (0.370 -> 0.080 -> 0.010 -> 0.000). Per-conversation capture at
+            # on_start / on_listening / on_tts_start (in
             # voice_assistant.yaml) replaces it — those moments are
             # BEFORE we perturb MA so the volume is stable and
             # represents the user's intended level.
@@ -1037,11 +1100,48 @@ script:
                   if (sound_file == "factory_reset_confirmed_sound") return base + "/factory_reset_confirmed.mp3";
                   return std::string("");
 
-  # Legacy no-op kept so voice_assistant.yaml's on_start / on_tts_start /
-  # on_wake_word_detected callers don't need rewiring. The Duck mode
-  # captures user_target_volume from explicit safe moments instead
-  # (routing-switch on, manual sync, mode change, auto-recapture).
+  # Capture the exact volume that must be restored after this conversation.
+  # Called before any routed wake chime/TTS mirror from on_start,
+  # on_listening, and on_tts_start. The valid flag makes it single-shot across
+  # follow-up turns, so a later on_tts_start cannot replace the real 12%
+  # baseline with MA's temporary 67% announcement volume.
   - id: capture_volume_for_cycle
     mode: single
     then:
-      - lambda: 'return;'
+      # Snapshot player state together with the first volume capture. Later
+      # follow-up turns leave both values untouched, so an active announcement
+      # cannot make the framework believe it was pre-existing music.
+      - if:
+          condition:
+            lambda: 'return !id(external_player_conversation_volume_valid);'
+          then:
+            - lambda: 'id(external_player_state_at_cycle_start) = id(external_player_state_observer).state;'
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(external_speaker_routing_on);'
+              - binary_sensor.is_on: external_speaker_configured
+              - lambda: 'return !id(external_player_conversation_volume_valid);'
+              - lambda: 'return id(duck_state) == 0;'
+              - lambda: 'return !id(external_player_currently_paused);'
+              - lambda: 'return !std::isnan(id(external_player_volume_level_observer).state);'
+          then:
+            - lambda: |-
+                float v = id(external_player_volume_level_observer).state;
+                if (v < 0.0f) v = 0.0f;
+                if (v > 1.0f) v = 1.0f;
+                id(external_player_conversation_volume) = v;
+                id(external_player_conversation_volume_valid) = true;
+
+                // When music is genuinely playing this same safe pre-announce
+                // reading is also the correct Duck-mode baseline. Idle player
+                // volumes are intentionally NOT persisted as music targets.
+                if (id(external_player_state_observer).state == "playing") {
+                  id(user_target_volume) = v;
+                  id(user_target_volume_valid) = true;
+                }
+                ESP_LOGI("ext_spk", "Captured conversation restore volume = %.3f (state=%s, cycle=%u)",
+                         v, id(external_player_state_observer).state.c_str(), id(duck_cycle_id));
+            - sensor.template.publish:
+                id: external_player_target_volume
+                state: !lambda 'return id(external_player_conversation_volume);'
